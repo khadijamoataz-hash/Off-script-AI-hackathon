@@ -27,6 +27,7 @@ test:
 
 redteam:
 	$(PYTHON) -m pytest tests/test_redteam.py -v
+	$(PYTHON) scripts/run_redteam.py
 
 verify-log:
 	$(PYTHON) scripts/verify_decision_log.py $(DECISION_LOG)
