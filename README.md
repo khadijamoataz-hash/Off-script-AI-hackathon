@@ -18,6 +18,6 @@ make up          # Start via Docker Compose (or local uvicorn if Docker is not i
 ## Staged Build Roadmap
 - **Stage 1 (Complete)**: Repo scaffold, Apache-2.0 license, SQLite Evidence Ledger, SHA-256 hash-chained Decision Log (`DECISIONS.jsonl` + `make verify-log`).
 - **Stage 2 (Complete)**: Policy Engine ("must never" rules in code + fail-closed classifier pass), Outbox & Signed Single-Use Content-Hash Approval Tokens, Red-Team Safety Suite (`make redteam`).
-- **Stage 3**: Ollama LLM Adapter (structured outputs + retry/repair) & 6-Phase State Machine Orchestrator.
+- **Stage 3 (Complete)**: Ollama LLM Adapter (structured outputs + automatic repair retries + safety classifier) & 6-Phase State Machine Orchestrator (`advance`, `repeat`, `pivot_back`, `stop`).
 - **Stage 4**: Phase Agents (Discover, Validate, Build sandbox, Commercial setup, Launch outbox, Operate).
 - **Stage 5**: FastAPI + HTMX Founder Dashboard, CLI, and Live End-to-End Demo.
