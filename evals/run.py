@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from policy.redteam import format_redteam_markdown_table, run_redteam_suite  # noqa: E402
+from evals.redteam import format_redteam_markdown_table, run_redteam_suite  # noqa: E402
 
 
 def main() -> int:

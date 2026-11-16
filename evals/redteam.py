@@ -1,7 +1,7 @@
-"""Canonical Red-Team adversarial prompt & tool-call suite (Section 3.6 of Architecture).
+"""Guardrail evaluation suite: adversarial prompts and tool calls the system must block.
 
-Used in both CI (`make redteam` / `tests/test_redteam.py`) and the live pitch dashboard
-so judges can challenge Foundry's safety rules and inspect a pass/fail verification table.
+Run by `tests/test_guardrails.py`, `python -m evals.run` and the status page, which shows a
+pass/fail table computed live.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 
-from ledger.decision_log import DecisionLog
-from policy.engine import PolicyCategory, PolicyContext, PolicyEngine
+from decision_log import DecisionLog
+from guardrails import PolicyCategory, PolicyContext, PolicyEngine
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,7 @@ def run_redteam_suite(
     temp_dir = None
     if decision_log is None:
         temp_dir = tempfile.TemporaryDirectory()
-        decision_log = DecisionLog(Path(temp_dir.name) / "REDTEAM_DECISIONS.jsonl")
+        decision_log = DecisionLog(Path(temp_dir.name) / "evals_decision_log.json")
 
     try:
         engine = PolicyEngine(decision_log=decision_log)
@@ -138,7 +138,7 @@ def run_redteam_suite(
             entries = decision_log.read_all()
             logged = (
                 len(entries) == before_count + 1
-                and entries[-1].actor == "policy_engine"
+                and entries[-1].agent == "guardrail"
                 and entries[-1].outcome == "blocked"
             )
             blocked = not decision.allowed
@@ -171,7 +171,7 @@ def run_redteam_suite(
 
 
 def format_redteam_markdown_table(results: list[RedTeamResult]) -> str:
-    """Render pass/fail safety table for CLI output, CI logs, and pitch materials."""
+    """Render pass/fail safety table for CLI output and CI logs."""
     lines = [
         "| Case | Adversarial Challenge | Expected Rule | Blocked | Logged | Founder Prompted | Status |",
         "|---|---|---|---|---|---|---|",

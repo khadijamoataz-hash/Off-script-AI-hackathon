@@ -26,11 +26,9 @@ dev = [
     "pytest-asyncio>=0.23.0",
 ]
 
-[project.scripts]
-foundry = "orchestrator.cli:app"
-
-[tool.setuptools.packages.find]
-include = ["orchestrator*", "agents*", "policy*", "ledger*", "outbox*", "llm*", "ui*"]
+[tool.setuptools]
+py-modules = ["app", "approval", "decision_log", "evidence", "gates", "guardrails", "llm", "orchestrator"]
+packages = ["agents", "evals"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -26,117 +26,26 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
 
 from pydantic import BaseModel, Field
 
-from ledger.decision_log import DecisionLog
-from ledger.evidence_ledger import ClaimType, EvidenceLedger
-from outbox.queue import ActionStatus, OutboxService
-
-
-class PhaseName(str, Enum):
-    DISCOVER = "discover"
-    VALIDATE = "validate"
-    BUILD = "build"
-    COMMERCIAL = "commercial"
-    LAUNCH = "launch"
-    OPERATE = "operate"
-
-
-PHASE_ORDER: tuple[PhaseName, ...] = (
-    PhaseName.DISCOVER,
-    PhaseName.VALIDATE,
-    PhaseName.BUILD,
-    PhaseName.COMMERCIAL,
-    PhaseName.LAUNCH,
-    PhaseName.OPERATE,
+from decision_log import DecisionLog
+from approval import OutboxService
+from evidence import EvidenceLedger
+from gates import (
+    PHASE_DEFINITIONS,
+    PHASE_ORDER,
+    GateCheckResult,
+    GateOutcome,
+    GateType,
+    PhaseDefinition,
+    PhaseName,
+    ProjectStatus,
+    evaluate_gate,
 )
-
-
-class GateType(str, Enum):
-    FOUNDER_APPROVAL = "founder_approval"
-    EVIDENCE_TARGET = "evidence_target"
-    TESTS_PASS = "tests_pass"
-
-
-class GateOutcome(str, Enum):
-    ADVANCE = "advance"
-    REPEAT = "repeat"
-    PIVOT_BACK = "pivot_back"
-    STOP = "stop"
-
-
-class ProjectStatus(str, Enum):
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    STOPPED = "stopped"
-
-
-@dataclass(frozen=True)
-class PhaseDefinition:
-    name: PhaseName
-    index: int
-    title: str
-    entry_criteria: str
-    gate_type: GateType
-    gate_description: str
-
-
-PHASE_DEFINITIONS: dict[PhaseName, PhaseDefinition] = {
-    PhaseName.DISCOVER: PhaseDefinition(
-        name=PhaseName.DISCOVER,
-        index=0,
-        title="1. Discover",
-        entry_criteria="Founder provides an initial digital product idea and target audience.",
-        gate_type=GateType.FOUNDER_APPROVAL,
-        gate_description="Discover artifact exists and founder approves the sharpened idea brief.",
-    ),
-    PhaseName.VALIDATE: PhaseDefinition(
-        name=PhaseName.VALIDATE,
-        index=1,
-        title="2. Validate",
-        entry_criteria="Approved idea brief + pre-committed evidence target set before validation.",
-        gate_type=GateType.EVIDENCE_TARGET,
-        gate_description="Sourced FACT claims + recorded demand signals >= validate_evidence_target, plus founder approval.",
-    ),
-    PhaseName.BUILD: PhaseDefinition(
-        name=PhaseName.BUILD,
-        index=2,
-        title="3. Build",
-        entry_criteria="Validated demand target met in Phase 2.",
-        gate_type=GateType.TESTS_PASS,
-        gate_description="Digital product scaffolded in sandbox with passing automated tests + founder review.",
-    ),
-    PhaseName.COMMERCIAL: PhaseDefinition(
-        name=PhaseName.COMMERCIAL,
-        index=3,
-        title="4. Commercial Setup",
-        entry_criteria="Working, tested product artifact from Phase 3.",
-        gate_type=GateType.FOUNDER_APPROVAL,
-        gate_description="Pricing options (ASSUMPTION-labeled) + Terms/Refund/Privacy drafts approved by founder (zero payment code).",
-    ),
-    PhaseName.LAUNCH: PhaseDefinition(
-        name=PhaseName.LAUNCH,
-        index=4,
-        title="5. Launch",
-        entry_criteria="Approved commercial pricing and policy drafts.",
-        gate_type=GateType.FOUNDER_APPROVAL,
-        gate_description="Launch drafts queued in Outbox; no unreviewed PENDING items remain and at least 1 action approved/executed.",
-    ),
-    PhaseName.OPERATE: PhaseDefinition(
-        name=PhaseName.OPERATE,
-        index=5,
-        title="6. Operate & Learn",
-        entry_criteria="Approved launch assets exported.",
-        gate_type=GateType.FOUNDER_APPROVAL,
-        gate_description="Founder reviews post-launch learnings and chooses continue (complete), repeat, pivot_back, or stop.",
-    ),
-}
 
 
 def _utc_now_iso() -> str:
@@ -161,14 +70,6 @@ class ProjectRecord(BaseModel):
     updated_at: str
 
 
-class GateCheckResult(BaseModel):
-    ready_to_advance: bool
-    phase: PhaseName
-    gate_type: GateType
-    blockers: list[str] = Field(default_factory=list)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-
-
 class OrchestratorError(RuntimeError):
     """Raised on invalid state transitions, unmet gate criteria, or inactive projects."""
 
@@ -186,7 +87,7 @@ class Orchestrator:
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.decision_log = decision_log or DecisionLog("DECISIONS.jsonl")
+        self.decision_log = decision_log or DecisionLog()
         self.evidence_ledger = evidence_ledger or EvidenceLedger(self.db_path)
         self.outbox = outbox or OutboxService(
             self.db_path,
@@ -265,13 +166,14 @@ class Orchestrator:
                 ),
             )
 
-        self.decision_log.append(
+        self._log(
             project_id=pid,
             phase=PhaseName.DISCOVER.value,
             decision=(
                 f"Created project '{name.strip()}' ({pid}) in Phase 1 (Discover) "
                 f"with pre-set Validate evidence target = {validate_evidence_target}."
             ),
+            action="create_project",
             actor="system",
             outcome="recorded",
             metadata={"validate_evidence_target": validate_evidence_target},
@@ -293,13 +195,14 @@ class Orchestrator:
         return [self._row_to_project(r) for r in rows]
 
     def set_validate_evidence_target(self, project_id: str, target: int) -> ProjectRecord:
-        """Set or adjust the validation evidence target BEFORE advancing past Discover."""
+        """Set the validation evidence target. Allowed only before Validate starts."""
         proj = self._require_project(project_id)
         if target < 1:
             raise OrchestratorError("Evidence target must be at least 1.")
-        if PHASE_DEFINITIONS[proj.current_phase].index > PHASE_DEFINITIONS[PhaseName.VALIDATE].index:
+        if proj.current_phase != PhaseName.DISCOVER:
             raise OrchestratorError(
-                "Cannot retroactively change Validate evidence target after passing Validate."
+                "The Validate evidence target is fixed once Validate starts; it can only be set "
+                "during Discover."
             )
         now = _utc_now_iso()
         with self._connect() as conn:
@@ -307,10 +210,11 @@ class Orchestrator:
                 "UPDATE projects SET validate_evidence_target = ?, updated_at = ? WHERE id = ?",
                 (target, now, project_id),
             )
-        self.decision_log.append(
+        self._log(
             project_id=project_id,
             phase=proj.current_phase.value,
             decision=f"Set Phase 2 (Validate) evidence target to {target}",
+            action="set_evidence_target",
             actor="founder_approval",
             outcome="recorded",
             metadata={"validate_evidence_target": target},
@@ -324,6 +228,9 @@ class Orchestrator:
         artifact: dict[str, Any],
         *,
         evidence_ids: list[str] | None = None,
+        agent: str = "agent",
+        model: str | None = None,
+        cost: float = 0,
     ) -> ProjectRecord:
         """Store structured phase agent output and verify referenced Evidence Ledger claim IDs."""
         proj = self._require_project(project_id)
@@ -348,10 +255,14 @@ class Orchestrator:
                 (json.dumps(artifacts), now, project_id),
             )
 
-        self.decision_log.append(
+        self._log(
             project_id=project_id,
             phase=norm_phase.value,
             decision=f"Saved structured artifact for phase '{norm_phase.value}'",
+            action="save_phase_artifact",
+            agent=agent,
+            model=model,
+            cost=cost,
             actor="agent_proposal",
             outcome="proposed",
             evidence_ids=ev_ids,
@@ -377,10 +288,11 @@ class Orchestrator:
                 "UPDATE projects SET recorded_demand_signals = ?, updated_at = ? WHERE id = ?",
                 (new_total, now, project_id),
             )
-        self.decision_log.append(
+        self._log(
             project_id=project_id,
             phase=PhaseName.VALIDATE.value,
             decision=f"{note} (+{signals_delta}, total={new_total})",
+            action="record_demand_signals",
             actor="founder_approval",
             outcome="recorded",
             evidence_ids=list(evidence_ids or []),
@@ -404,10 +316,11 @@ class Orchestrator:
                 "UPDATE projects SET build_tests_passed = ?, updated_at = ? WHERE id = ?",
                 (1 if passed else 0, now, project_id),
             )
-        self.decision_log.append(
+        self._log(
             project_id=project_id,
             phase=PhaseName.BUILD.value,
             decision=f"Sandbox Build test run {'PASSED' if passed else 'FAILED'}: {summary}",
+            action="build_tests",
             actor="gate_check",
             outcome="recorded",
             evidence_ids=list(evidence_ids or []),
@@ -416,80 +329,8 @@ class Orchestrator:
         return self._require_project(project_id)
 
     def check_gate(self, project_id: str) -> GateCheckResult:
-        """Evaluate objective gate prerequisites for the project's current phase."""
-        proj = self._require_project(project_id)
-        phase = proj.current_phase
-        defn = PHASE_DEFINITIONS[phase]
-        blockers: list[str] = []
-        metrics: dict[str, Any] = {}
-
-        if phase.value not in proj.phase_artifacts:
-            blockers.append(
-                f"Phase '{phase.value}' has no generated/saved artifact yet."
-            )
-
-        if phase == PhaseName.VALIDATE:
-            fact_claims = self.evidence_ledger.list_claims(
-                project_id=project_id,
-                claim_type=ClaimType.FACT,
-            )
-            evidence_score = len(fact_claims) + proj.recorded_demand_signals
-            metrics = {
-                "sourced_facts": len(fact_claims),
-                "recorded_demand_signals": proj.recorded_demand_signals,
-                "combined_evidence_count": evidence_score,
-                "target": proj.validate_evidence_target,
-            }
-            if len(fact_claims) == 0:
-                blockers.append(
-                    "Validate gate requires at least 1 sourced FACT claim in the Evidence Ledger."
-                )
-            if evidence_score < proj.validate_evidence_target:
-                blockers.append(
-                    f"Evidence target not yet reached: have {evidence_score} "
-                    f"({len(fact_claims)} sourced facts + {proj.recorded_demand_signals} signals), "
-                    f"need >= {proj.validate_evidence_target}."
-                )
-
-        elif phase == PhaseName.BUILD:
-            metrics = {"build_tests_passed": proj.build_tests_passed}
-            if not proj.build_tests_passed:
-                blockers.append(
-                    "Build gate requires automated sandbox tests to pass (`build_tests_passed=True`)."
-                )
-
-        elif phase == PhaseName.LAUNCH:
-            actions = self.outbox.list_actions(project_id=project_id)
-            launch_actions = [a for a in actions if a.phase == PhaseName.LAUNCH.value]
-            pending = [a for a in launch_actions if a.status == ActionStatus.PENDING]
-            approved_or_executed = [
-                a
-                for a in launch_actions
-                if a.status in {ActionStatus.APPROVED, ActionStatus.EXECUTED}
-            ]
-            metrics = {
-                "total_launch_actions": len(launch_actions),
-                "pending_actions": len(pending),
-                "approved_or_executed_actions": len(approved_or_executed),
-            }
-            if not launch_actions:
-                blockers.append("Launch gate requires at least 1 proposed action in the Outbox.")
-            if pending:
-                blockers.append(
-                    f"{len(pending)} Outbox item(s) are still PENDING founder approval/rejection."
-                )
-            if not approved_or_executed:
-                blockers.append(
-                    "At least 1 Launch Outbox action must be approved by the founder to advance."
-                )
-
-        return GateCheckResult(
-            ready_to_advance=(len(blockers) == 0),
-            phase=phase,
-            gate_type=defn.gate_type,
-            blockers=blockers,
-            metrics=metrics,
-        )
+        """Evaluate the current phase's gate (see `gates.py`)."""
+        return evaluate_gate(self._require_project(project_id), self.evidence_ledger, self.outbox)
 
     def decide_gate(
         self,
@@ -521,14 +362,21 @@ class Orchestrator:
             gate_check = self.check_gate(project_id)
             if not gate_check.ready_to_advance:
                 joined = "; ".join(gate_check.blockers)
-                self.decision_log.append(
+                self._log(
                     project_id=project_id,
                     phase=current.value,
                     decision=f"Gate advance blocked on '{current.value}': {joined}",
+                    action=f"{current.value}_gate",
+                    agent="gate",
                     actor="gate_check",
                     outcome="blocked",
                     evidence_ids=ev_ids,
-                    metadata={"blockers": gate_check.blockers, "metrics": gate_check.metrics},
+                    metadata={
+                        "blockers": gate_check.blockers,
+                        "metrics": gate_check.metrics,
+                        "system_recommendation": gate_check.recommendation.value,
+                        "recommendation_reason": gate_check.recommendation_reason,
+                    },
                 )
                 raise OrchestratorError(f"Gate check failed for '{current.value}': {joined}")
 
@@ -540,13 +388,15 @@ class Orchestrator:
                         "UPDATE projects SET current_phase = ?, updated_at = ? WHERE id = ?",
                         (next_phase.value, now, project_id),
                     )
-                self.decision_log.append(
+                self._log(
                     project_id=project_id,
                     phase=current.value,
                     decision=(
                         f"Gate PASSED on '{current.value}' -> advancing to '{next_phase.value}'. "
                         f"{rationale}".strip()
                     ),
+                    action=f"{current.value}_gate",
+                    agent="gate",
                     actor="founder_approval",
                     outcome=GateOutcome.ADVANCE.value,
                     evidence_ids=ev_ids,
@@ -558,10 +408,12 @@ class Orchestrator:
                         "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
                         (ProjectStatus.COMPLETED.value, now, project_id),
                     )
-                self.decision_log.append(
+                self._log(
                     project_id=project_id,
                     phase=current.value,
                     decision=f"Completed Phase 6 ('{current.value}'). {rationale}".strip(),
+                    action=f"{current.value}_gate",
+                    agent="gate",
                     actor="founder_approval",
                     outcome=GateOutcome.ADVANCE.value,
                     evidence_ids=ev_ids,
@@ -582,13 +434,15 @@ class Orchestrator:
                     """,
                     (json.dumps(iterations), reset_tests, now, project_id),
                 )
-            self.decision_log.append(
+            self._log(
                 project_id=project_id,
                 phase=current.value,
                 decision=(
                     f"Founder chose REPEAT on '{current.value}' "
                     f"(iteration {iterations[current.value]}). {rationale}".strip()
                 ),
+                action=f"{current.value}_gate",
+                agent="gate",
                 actor="founder_approval",
                 outcome=GateOutcome.REPEAT.value,
                 evidence_ids=ev_ids,
@@ -621,13 +475,15 @@ class Orchestrator:
                         project_id,
                     ),
                 )
-            self.decision_log.append(
+            self._log(
                 project_id=project_id,
                 phase=current.value,
                 decision=(
                     f"Founder chose PIVOT BACK from '{current.value}' -> '{dest.value}'. "
                     f"{rationale}".strip()
                 ),
+                action=f"{current.value}_gate",
+                agent="gate",
                 actor="founder_approval",
                 outcome=GateOutcome.PIVOT_BACK.value,
                 evidence_ids=ev_ids,
@@ -641,10 +497,12 @@ class Orchestrator:
                     "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
                     (ProjectStatus.STOPPED.value, now, project_id),
                 )
-            self.decision_log.append(
+            self._log(
                 project_id=project_id,
                 phase=current.value,
                 decision=f"Founder STOPPED project at '{current.value}'. {rationale}".strip(),
+                action=f"{current.value}_gate",
+                agent="gate",
                 actor="founder_approval",
                 outcome=GateOutcome.STOP.value,
                 evidence_ids=ev_ids,
@@ -652,6 +510,17 @@ class Orchestrator:
             return self._require_project(project_id)
 
         raise OrchestratorError(f"Unsupported gate outcome: {norm_outcome}")
+
+    def _log(self, **fields: Any) -> None:
+        """Append to the decision log, filling `sources` with the URLs behind the evidence IDs."""
+        if "sources" not in fields:
+            urls: list[str] = []
+            for cid in fields.get("evidence_ids") or []:
+                claim = self.evidence_ledger.get_claim(cid)
+                if claim is not None and claim.source_url and claim.source_url not in urls:
+                    urls.append(claim.source_url)
+            fields["sources"] = urls
+        self.decision_log.append(**fields)
 
     def _require_project(self, project_id: str) -> ProjectRecord:
         proj = self.get_project(project_id)

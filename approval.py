@@ -14,8 +14,8 @@ Security invariants:
    - token `content_hash` matches current `action.content_hash`,
    - token has never been used or revoked (`single-use`),
    - PolicyEngine tool check passes with `has_valid_approval_token=True`.
-6. Prototype executor writes an auditable export bundle to `exports/` + copy-ready text (honestly
-   marked as `export_bundle` rather than pretending to post to external APIs).
+6. The executor writes an auditable copy-ready text file to `outputs/`. It never posts to any
+   external service; the founder posts the approved text themselves.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ from typing import Any, Iterator
 
 from pydantic import BaseModel, Field
 
-from ledger.decision_log import DecisionLog
-from policy.engine import PolicyContext, PolicyEngine, PolicyViolationError
+from decision_log import DecisionLog
+from guardrails import PolicyContext, PolicyEngine, PolicyViolationError
 
 
 class ActionType(str, Enum):
@@ -45,6 +45,7 @@ class ActionType(str, Enum):
     LISTING = "listing"
     DEPLOY = "deploy"
     SUPPORT_REPLY = "support_reply"
+    SIGN = "sign"  # accepting terms / publishing policies: always needs founder approval
     SPEND = "spend"  # Explicitly blocked by Policy Engine ("never hold or move money")
 
 
@@ -53,6 +54,16 @@ class ActionStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     EXECUTED = "executed"
+
+
+_PHASE_NUMBER = {
+    "discover": 1,
+    "validate": 2,
+    "build": 3,
+    "commercial": 4,
+    "launch": 5,
+    "operate": 6,
+}
 
 
 def _utc_now_iso() -> str:
@@ -79,6 +90,7 @@ class ProposedAction(BaseModel):
     id: str
     project_id: str
     phase: str
+    step: int = 1
     action_type: ActionType
     target: str
     title: str
@@ -138,7 +150,7 @@ class OutboxService:
         self,
         db_path: str | Path = "data/foundry.sqlite3",
         *,
-        export_dir: str | Path = "exports",
+        export_dir: str | Path = "outputs",
         decision_log: DecisionLog | None = None,
         policy_engine: PolicyEngine | None = None,
         signing_secret: str | bytes | None = None,
@@ -151,11 +163,29 @@ class OutboxService:
         self.policy_engine = policy_engine or PolicyEngine(decision_log=decision_log)
 
         env_secret = os.environ.get("FOUNDRY_APPROVAL_SECRET")
-        raw_secret = signing_secret or env_secret or secrets.token_hex(32)
+        raw_secret = signing_secret or env_secret or self._load_or_create_secret_file()
         self._secret: bytes = (
             raw_secret.encode("utf-8") if isinstance(raw_secret, str) else raw_secret
         )
         self._init_db()
+
+    def _load_or_create_secret_file(self) -> str:
+        """Persist the approval signing key next to the DB so approvals survive a restart.
+
+        The key file lives in the git-ignored data directory with owner-only permissions.
+        """
+        key_path = self.db_path.parent / "approval_signing.key"
+        if key_path.exists():
+            existing = key_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        new_secret = secrets.token_hex(32)
+        key_path.write_text(new_secret, encoding="utf-8")
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        return new_secret
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -175,6 +205,7 @@ class OutboxService:
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
                     phase TEXT NOT NULL,
+                    step INTEGER NOT NULL DEFAULT 1,
                     action_type TEXT NOT NULL,
                     target TEXT NOT NULL,
                     title TEXT NOT NULL,
@@ -212,6 +243,7 @@ class OutboxService:
         *,
         project_id: str = "default",
         phase: str = "launch",
+        step: int = 1,
         action_type: ActionType | str,
         target: str,
         title: str,
@@ -253,15 +285,16 @@ class OutboxService:
             conn.execute(
                 """
                 INSERT INTO outbox_actions (
-                    id, project_id, phase, action_type, target, title, body,
+                    id, project_id, phase, step, action_type, target, title, body,
                     content_hash, status, evidence_ids_json, rejection_reason,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 """,
                 (
                     action_id,
                     project_id,
                     phase.lower(),
+                    int(step),
                     normalized_type.value,
                     target.strip(),
                     title.strip(),
@@ -279,6 +312,7 @@ class OutboxService:
                 project_id=project_id,
                 phase=phase,
                 decision=f"Queued proposed {normalized_type.value} '{title.strip()}' ({action_id}) in Outbox",
+                action=f"propose_{normalized_type.value}",
                 actor="agent_proposal",
                 outcome="proposed",
                 evidence_ids=ev_ids,
@@ -394,6 +428,7 @@ class OutboxService:
                 project_id=action.project_id,
                 phase=action.phase,
                 decision=f"Founder approved Outbox action {action.id} ('{action.title}')",
+                action="approve_action",
                 actor="founder_approval",
                 outcome="approved",
                 evidence_ids=action.evidence_ids,
@@ -440,6 +475,7 @@ class OutboxService:
                 project_id=action.project_id,
                 phase=action.phase,
                 decision=f"Founder rejected Outbox action {action.id}: {reason.strip()}",
+                action="reject_action",
                 actor="founder_rejection",
                 outcome="rejected",
                 evidence_ids=action.evidence_ids,
@@ -534,7 +570,7 @@ class OutboxService:
 
         # Prototype executor: export copy-ready file bundle (honestly labeled)
         copy_ready = (
-            f"=== FOUNDRY APPROVED EXPORT ({action.action_type.value.upper()}) ===\n"
+            f"=== FOUNDRY APPROVED EXPORT - NOT POSTED ANYWHERE; COPY-READY TEXT FOR THE FOUNDER ({action.action_type.value.upper()}) ===\n"
             f"Action ID: {action.id}\n"
             f"Target Channel: {action.target}\n"
             f"Title / Subject: {action.title}\n"
@@ -544,7 +580,11 @@ class OutboxService:
             f"------------------------------------------------------------\n"
             f"{action.body}\n"
         )
-        export_file = self.export_dir / f"{action.id.lower()}_{action.action_type.value}.txt"
+        phase_no = _PHASE_NUMBER.get(action.phase, 0)
+        export_file = self.export_dir / (
+            f"phase{phase_no}_step{action.step}_approved_{action.action_type.value}"
+            f"_{action.id.lower()}.txt"
+        )
         export_file.write_text(copy_ready, encoding="utf-8")
 
         if self.decision_log is not None:
@@ -552,6 +592,7 @@ class OutboxService:
                 project_id=action.project_id,
                 phase=action.phase,
                 decision=f"Executed approved Outbox action {action.id} to export bundle {export_file.name}",
+                action="export_approved_action",
                 actor="system",
                 outcome="recorded",
                 evidence_ids=action.evidence_ids,
@@ -609,6 +650,7 @@ class OutboxService:
                 project_id=action.project_id,
                 phase=action.phase,
                 decision=f"[OUTBOX-TOKEN-BLOCK] Blocked execution of {action.id}: {reason}",
+                action="block_execution",
                 actor="policy_engine",
                 outcome="blocked",
                 evidence_ids=action.evidence_ids,
@@ -620,6 +662,7 @@ class OutboxService:
         *,
         project_id: str,
         phase: str,
+        action: str,
         decision: str,
         actor: str,
         outcome: str,
@@ -640,6 +683,7 @@ class OutboxService:
         self.decision_log.append(
             project_id=project_id,
             phase=safe_phase,
+            action=action,
             decision=decision,
             actor=actor,
             outcome=outcome,
@@ -653,6 +697,7 @@ class OutboxService:
             id=row["id"],
             project_id=row["project_id"],
             phase=row["phase"],
+            step=int(row["step"]),
             action_type=ActionType(row["action_type"]),
             target=row["target"],
             title=row["title"],

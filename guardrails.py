@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
-from ledger.decision_log import DecisionLog
+from decision_log import DecisionLog
 
 
 class PolicyCategory(str, Enum):
@@ -164,6 +164,24 @@ EXTERNAL_EXECUTION_TOOLS = frozenset(
         "publish_listing",
         "send_support_reply",
         "execute_outbox_action",
+    }
+)
+
+
+# Internal tools that touch nothing outside Foundry. Every tool an agent may call must be listed in
+# one of the three sets in this module; anything else is blocked (allowlist, fail closed).
+INTERNAL_TOOLS = frozenset(
+    {
+        "web_search",
+        "fetch_url",
+        "read_file",
+        "write_file",
+        "list_files",
+        "run_sandbox_tests",
+        "add_claim",
+        "list_claims",
+        "save_phase_artifact",
+        "propose_action",
     }
 )
 
@@ -348,6 +366,21 @@ class PolicyEngine:
                 ),
             )
 
+        if (
+            normalized_tool not in INTERNAL_TOOLS
+            and normalized_tool not in EXTERNAL_EXECUTION_TOOLS
+        ):
+            return self._block(
+                ctx=ctx,
+                category=PolicyCategory.UNAPPROVED_EXTERNAL_ACTION,
+                rule_id="POL-009-UNKNOWN-TOOL",
+                reason=f"Tool '{normalized_tool}' is not on the allowlist; failing closed.",
+                founder_prompt=(
+                    f"An agent tried to call an unregistered tool '{normalized_tool}'. "
+                    "Only allowlisted tools can run; external actions must go through the Outbox."
+                ),
+            )
+
         # Also inspect serialized arguments against all text rules (e.g., card numbers, impersonation, fake reviews)
         serialized_args = " ".join(f"{k}={v}" for k, v in sorted(args.items()))
         return self.evaluate_text(serialized_args, context=ctx)
@@ -389,6 +422,7 @@ class PolicyEngine:
                 project_id=ctx.project_id,
                 phase=safe_phase,
                 decision=f"[{rule_id}] Blocked ({category.value}): {reason}",
+                action=f"block_{category.value.lower()}",
                 actor="policy_engine",
                 outcome="blocked",
                 metadata={

@@ -3,8 +3,9 @@
 Features:
 - Default path uses local Ollama (`http://localhost:11434`) with zero API keys and zero paid services.
 - Optional OpenAI-compatible HTTP endpoint behind `FOUNDRY_LLM_PROVIDER=openai_compat`.
-- Honest `OfflineDeterministicProvider` for tests, CI, and machines where Ollama is not yet running
-  (explicitly tagged via `provider_used="offline_deterministic"` so mocks are never disguised as live).
+- `OfflineDeterministicProvider` for tests and CI ONLY. It is never selected automatically: it must
+  be requested with `FOUNDRY_LLM_PROVIDER=offline` (or passed explicitly), and is tagged
+  `provider_used="offline_deterministic"`. If Ollama is unreachable in the default mode, calls fail.
 - Structured output generation validated against Pydantic v2 models + JSON Schema, with automatic
   JSON extraction and repair retries when a model emits malformed JSON or misses required fields.
 - Model-backed safety classifier builder (`build_llm_safety_classifier`) that plugs directly into
@@ -24,7 +25,7 @@ import httpx
 import jsonschema
 from pydantic import BaseModel, ValidationError
 
-from policy.engine import ClassifierCallable, ClassifierVerdict, PolicyCategory, PolicyContext
+from guardrails import ClassifierCallable, ClassifierVerdict, PolicyCategory, PolicyContext
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
@@ -64,6 +65,9 @@ class LLMResponse(Generic[TModel]):
     provider_used: str
     model_used: str
     attempts: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float = 0.0  # USD. Local open-weight models cost 0; no paid API is ever called.
 
 
 def extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -142,6 +146,17 @@ class OllamaProvider(LLMProvider):
         except httpx.HTTPError:
             return False
 
+    def has_model(self) -> bool:
+        """Return True if the configured model has finished downloading into Ollama."""
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=1.5)
+            resp.raise_for_status()
+            names = {str(m.get("name", "")) for m in resp.json().get("models", [])}
+        except (httpx.HTTPError, ValueError):
+            return False
+        wanted = self.model if ":" in self.model else f"{self.model}:latest"
+        return wanted in names
+
     def chat(
         self,
         *,
@@ -173,6 +188,10 @@ class OllamaProvider(LLMProvider):
         except httpx.HTTPError as exc:
             raise LLMError(f"Ollama request failed ({self.base_url}): {exc}") from exc
 
+        self.last_usage = {
+            "prompt_tokens": int(data.get("prompt_eval_count") or 0),
+            "completion_tokens": int(data.get("eval_count") or 0),
+        }
         content = data.get("message", {}).get("content", "")
         return str(content), str(data.get("model", self.model))
 
@@ -381,15 +400,15 @@ class LLMAdapter:
         if mode == "offline":
             return OfflineDeterministicProvider()
 
-        # Default "auto": prefer local Ollama if running; otherwise use honest offline fallback
-        ollama = OllamaProvider(
+        # Default "auto": always the real local Ollama model. There is deliberately NO silent
+        # fallback to the offline synthesizer: if Ollama is unreachable, calls raise LLMError so a
+        # mock can never be mistaken for a working model. Offline mode must be requested
+        # explicitly (FOUNDRY_LLM_PROVIDER=offline) and is for tests/CI only.
+        return OllamaProvider(
             base_url=self.config.ollama_url,
             model=self.config.model,
             timeout_seconds=self.config.timeout_seconds,
         )
-        if ollama.is_available():
-            return ollama
-        return OfflineDeterministicProvider()
 
     def runtime_status(self) -> dict[str, Any]:
         """Report honest live vs offline fallback LLM status for UI and CLI diagnostics."""
@@ -400,12 +419,17 @@ class LLMAdapter:
         )
         ollama_live = ollama.is_available()
         active = self.resolve_provider()
+        model_ready = ollama.has_model() if ollama_live else False
         return {
             "configured_mode": self.config.provider,
             "active_provider": active.name,
             "configured_model": self.config.model,
             "ollama_url": self.config.ollama_url,
             "ollama_reachable": ollama_live,
+            "model_downloaded": model_ready,
+            "is_mock": active.name == OfflineDeterministicProvider.name,
+            "ready": (active.name == OfflineDeterministicProvider.name)
+            or (ollama_live and model_ready),
         }
 
     def generate_structured(
@@ -431,6 +455,8 @@ class LLMAdapter:
         last_error: str = ""
         last_raw: str = ""
         total_attempts = 1 + max(0, self.config.max_repair_retries)
+        prompt_tokens = 0
+        completion_tokens = 0
 
         for attempt in range(1, total_attempts + 1):
             raw_text, model_used = provider.chat(
@@ -440,6 +466,9 @@ class LLMAdapter:
                 temperature=temp,
             )
             last_raw = raw_text
+            usage = getattr(provider, "last_usage", None) or {}
+            prompt_tokens += int(usage.get("prompt_tokens", 0))
+            completion_tokens += int(usage.get("completion_tokens", 0))
 
             try:
                 data = extract_json_object(raw_text)
@@ -451,6 +480,8 @@ class LLMAdapter:
                     provider_used=provider.name,
                     model_used=model_used,
                     attempts=attempt,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
             except (ValueError, jsonschema.ValidationError, ValidationError) as exc:
                 last_error = str(exc)
@@ -496,6 +527,10 @@ def build_llm_safety_classifier(adapter: LLMAdapter) -> ClassifierCallable:
             response_model=ClassifierVerdict,
             temperature=0.0,
         )
+        if resp.model_used == "offline-schema-synthesizer":
+            # The offline synthesizer cannot assess content (it would answer safe=True to
+            # anything). Raising here makes PolicyEngine fail closed instead of fail open.
+            raise LLMError("Safety classifier has no real model available; failing closed.")
         return resp.parsed
 
     return _classify

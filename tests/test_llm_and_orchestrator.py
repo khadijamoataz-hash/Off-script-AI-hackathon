@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, Field
 
-from ledger.decision_log import DecisionLog
-from ledger.evidence_ledger import ClaimType, EvidenceLedger
-from llm.adapter import (
+from decision_log import DecisionLog
+from evidence import ClaimType, EvidenceLedger
+from llm import (
     LLMAdapter,
     LLMConfig,
     LLMError,
@@ -17,15 +17,15 @@ from llm.adapter import (
     build_llm_safety_classifier,
     extract_json_object,
 )
-from orchestrator.state_machine import (
+from orchestrator import (
     GateOutcome,
     Orchestrator,
     OrchestratorError,
     PhaseName,
     ProjectStatus,
 )
-from outbox.queue import ActionType, OutboxService
-from policy.engine import PolicyCategory, PolicyEngine
+from approval import ActionType, OutboxService
+from guardrails import PolicyCategory, PolicyEngine
 
 
 class _SampleBrief(BaseModel):
@@ -77,7 +77,7 @@ def test_llm_adapter_raises_after_exhausting_repair_retries() -> None:
 
 
 def test_llm_safety_classifier_integrates_with_policy_engine(tmp_path: Path) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     # Model classifier flags a subtle income promise that avoided exact keyword patterns
     scripted_unsafe = [
         '{"safe": false, "confident": true, "category": "INCOME_GUARANTEE", "reason": "Implied certainty of passive wealth"}'
@@ -99,11 +99,11 @@ def test_llm_safety_classifier_integrates_with_policy_engine(tmp_path: Path) -> 
 
 def test_orchestrator_full_six_phase_lifecycle_and_gates(tmp_path: Path) -> None:
     db_path = tmp_path / "foundry.sqlite3"
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     ledger = EvidenceLedger(db_path)
     outbox = OutboxService(
         db_path,
-        export_dir=tmp_path / "exports",
+        export_dir=tmp_path / "outputs",
         decision_log=log,
         signing_secret="stage3-secret",
     )
@@ -225,7 +225,7 @@ def test_orchestrator_full_six_phase_lifecycle_and_gates(tmp_path: Path) -> None
 
 def test_orchestrator_pivot_back_and_stop_outcomes(tmp_path: Path) -> None:
     db_path = tmp_path / "foundry.sqlite3"
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     orch = Orchestrator(db_path, decision_log=log)
 
     proj = orch.create_project(name="Pivot Demo", idea_summary="Initial B2B idea")

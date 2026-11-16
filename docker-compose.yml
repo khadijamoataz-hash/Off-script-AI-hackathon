@@ -1,15 +1,26 @@
 services:
   ollama:
     image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
+    # Not published to the host: avoids a port clash if Ollama already runs locally.
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
       test: ["CMD", "ollama", "list"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
+
+  # One-shot: downloads the open-weight model into the shared volume (several GB on first run,
+  # instant afterwards). The app starts without waiting and shows "model still downloading".
+  model-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["ollama", "pull", "${FOUNDRY_MODEL:-qwen2.5:7b}"]
+    restart: "no"
 
   foundry:
     build: .
@@ -17,15 +28,16 @@ services:
       - "8000:8000"
     environment:
       - FOUNDRY_OLLAMA_URL=http://ollama:11434
-      - FOUNDRY_MODEL=qwen2.5:7b
+      - FOUNDRY_MODEL=${FOUNDRY_MODEL:-qwen2.5:7b}
       - FOUNDRY_DB_PATH=/app/data/foundry.sqlite3
-      - FOUNDRY_DECISION_LOG=/app/DECISIONS.jsonl
+      - FOUNDRY_DECISION_LOG=/app/decision_log.json
     volumes:
       - ./data:/app/data
-      - ./exports:/app/exports
-      - ./DECISIONS.jsonl:/app/DECISIONS.jsonl
+      - ./outputs:/app/outputs
+      - ./decision_log.json:/app/decision_log.json
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
 
 volumes:
   ollama_data:

@@ -6,22 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from ledger.decision_log import DecisionLog
-from policy.engine import (
+from decision_log import DecisionLog
+from guardrails import (
     ClassifierVerdict,
     PolicyCategory,
     PolicyContext,
     PolicyEngine,
     PolicyViolationError,
 )
-from policy.redteam import REDTEAM_CASES, format_redteam_markdown_table, run_redteam_suite
+from evals.redteam import REDTEAM_CASES, format_redteam_markdown_table, run_redteam_suite
 
 
 @pytest.mark.parametrize("case", REDTEAM_CASES, ids=[c.case_id for c in REDTEAM_CASES])
 def test_canonical_redteam_prompt_is_blocked_logged_and_prompts_founder(
     tmp_path: Path, case
 ) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     engine = PolicyEngine(decision_log=log)
 
     if case.surface == "tool_call" and case.tool_name:
@@ -44,13 +44,13 @@ def test_canonical_redteam_prompt_is_blocked_logged_and_prompts_founder(
 
     entries = log.read_all()
     assert len(entries) == 1
-    assert entries[0].actor == "policy_engine"
+    assert entries[0].agent == "guardrail"
     assert entries[0].outcome == "blocked"
     assert log.verify().valid is True
 
 
 def test_full_redteam_suite_runner_and_markdown_table(tmp_path: Path) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     results = run_redteam_suite(decision_log=log)
     assert len(results) == len(REDTEAM_CASES)
     assert all(r.passed for r in results)
@@ -64,7 +64,7 @@ def test_full_redteam_suite_runner_and_markdown_table(tmp_path: Path) -> None:
 def test_policy_engine_fails_closed_when_classifier_errors_or_is_uncertain(
     tmp_path: Path,
 ) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
 
     def crashing_classifier(text: str, ctx: PolicyContext) -> ClassifierVerdict:
         raise TimeoutError("Local model classifier timed out")
@@ -91,7 +91,7 @@ def test_policy_engine_fails_closed_when_classifier_errors_or_is_uncertain(
 def test_policy_engine_allows_legitimate_evidence_backed_founder_drafts(
     tmp_path: Path,
 ) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     engine = PolicyEngine(decision_log=log)
 
     safe_draft = (

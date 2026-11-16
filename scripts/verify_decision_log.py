@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI verifier for DECISIONS.jsonl used by `make verify-log` and CI."""
+"""CLI verifier for decision_log.json: required keys, types and hash chain."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ledger.decision_log import DecisionLog  # noqa: E402
+from decision_log import DecisionLog  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    log_path = Path(args[0]) if args else Path("DECISIONS.jsonl")
+    log_path = Path(args[0]) if args else Path("decision_log.json")
 
     log = DecisionLog(log_path)
     result = log.verify()

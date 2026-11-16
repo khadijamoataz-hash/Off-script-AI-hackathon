@@ -12,4 +12,6 @@ build/
 .env
 data/
 sandbox_runs/
-exports/
+_to_delete/
+HANDOFF.md
+Makefile.new

@@ -1,7 +1,7 @@
 """SQLite-backed Evidence Ledger.
 
 Every factual claim must have a source URL, or it is automatically tagged ASSUMPTION.
-Agents reference claim IDs in phase reports so founders and judges can audit every statement.
+Agents reference claim IDs in phase reports so every statement can be audited.
 """
 
 from __future__ import annotations
@@ -228,7 +228,7 @@ class EvidenceLedger:
         }
 
     def export_markdown(self, *, project_id: str | None = None) -> str:
-        """Export claims table as Markdown for phase reports and judge verification."""
+        """Export claims table as Markdown for phase reports."""
         claims = self.list_claims(project_id=project_id)
         if not claims:
             return "_No claims recorded in Evidence Ledger._"

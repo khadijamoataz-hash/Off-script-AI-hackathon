@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from ledger.decision_log import DecisionLog
-from outbox.queue import ActionStatus, ActionType, ApprovalToken, OutboxError, OutboxService
-from policy.engine import PolicyCategory, PolicyViolationError
+from decision_log import DecisionLog
+from approval import ActionStatus, ActionType, ApprovalToken, OutboxError, OutboxService
+from guardrails import PolicyCategory, PolicyViolationError
 
 
 def test_outbox_blocks_unapproved_execution_and_logs_violation(tmp_path: Path) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     outbox = OutboxService(
         tmp_path / "foundry.sqlite3",
-        export_dir=tmp_path / "exports",
+        export_dir=tmp_path / "outputs",
         decision_log=log,
         signing_secret="test-secret-key",
     )
@@ -41,10 +41,10 @@ def test_outbox_blocks_unapproved_execution_and_logs_violation(tmp_path: Path) -
 
 
 def test_outbox_approve_execute_and_single_use_replay_protection(tmp_path: Path) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     outbox = OutboxService(
         tmp_path / "foundry.sqlite3",
-        export_dir=tmp_path / "exports",
+        export_dir=tmp_path / "outputs",
         decision_log=log,
         signing_secret="test-secret-key",
     )
@@ -77,10 +77,10 @@ def test_outbox_approve_execute_and_single_use_replay_protection(tmp_path: Path)
 
 
 def test_any_edit_after_approval_invalidates_signed_token(tmp_path: Path) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     outbox = OutboxService(
         tmp_path / "foundry.sqlite3",
-        export_dir=tmp_path / "exports",
+        export_dir=tmp_path / "outputs",
         decision_log=log,
         signing_secret="test-secret-key",
     )
@@ -115,10 +115,10 @@ def test_any_edit_after_approval_invalidates_signed_token(tmp_path: Path) -> Non
 
 
 def test_tampered_signature_and_rejected_actions_are_blocked(tmp_path: Path) -> None:
-    log = DecisionLog(tmp_path / "DECISIONS.jsonl")
+    log = DecisionLog(tmp_path / "decision_log.json")
     outbox = OutboxService(
         tmp_path / "foundry.sqlite3",
-        export_dir=tmp_path / "exports",
+        export_dir=tmp_path / "outputs",
         decision_log=log,
         signing_secret="test-secret-key",
     )
