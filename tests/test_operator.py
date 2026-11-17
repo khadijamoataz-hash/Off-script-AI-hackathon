@@ -157,3 +157,16 @@ def test_renderer_does_not_allow_model_prose_to_forge_metrics_table() -> None:
     assert "\n| Revenue |" not in memo
     assert "<script>" not in memo
     assert "ASSUMPTION / interpretation:" in memo
+
+
+@pytest.mark.parametrize("text", [" " * 20, "\n\t " * 10, "   too short   "])
+def test_review_rejects_blank_or_short_trimmed_prose(text: str) -> None:
+    with pytest.raises(ValidationError):
+        OperateOutput.model_validate({**REPLY, "working_hypothesis": text})
+
+
+def test_review_trims_valid_prose() -> None:
+    output = OperateOutput.model_validate({
+        **REPLY, "working_hypothesis": " \n Designers may need an interview checklist. \t ",
+    })
+    assert output.working_hypothesis == "Designers may need an interview checklist."

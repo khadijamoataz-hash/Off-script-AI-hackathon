@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from agents import AgentResult, run_agent
 from agents.intake import FounderBrief
@@ -14,7 +14,9 @@ from llm import LLMAdapter
 
 Count = Annotated[int, Field(strict=True, ge=0)]
 PositiveCount = Annotated[int, Field(strict=True, gt=0)]
-MemoText = Annotated[str, Field(min_length=10, max_length=700, pattern=r"\S")]
+MemoText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=10, max_length=700)
+]
 
 
 class RecordedMetrics(BaseModel):
