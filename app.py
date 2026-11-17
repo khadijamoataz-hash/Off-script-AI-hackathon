@@ -5,7 +5,8 @@
   choices. A step runs in the background; nothing moves past a gate without a founder choice.
 - `/status`: live checks (model, search, decision log, guardrail evals) and the status table.
 
-Working: Discover, Validate, Commercial setup and Launch drafts. Build and Operate are STUBBED.
+Working: Discover, Validate, Commercial setup, Launch drafts and a recorded-data learning review.
+Build and live operating integrations are STUBBED.
 Page layout, styles and result views live in `ui.py`; this file holds the routes.
 """
 
@@ -52,7 +53,7 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
     ("Approval queue with signed single-use tokens", "Working", "approval.py"),
     ("Six-phase state machine and gates", "Working", "orchestrator.py, gates.py"),
     ("Guardrails: keyword backstop, secrets detector, tool allowlist", "Working", "guardrails.py"),
-    ("Guardrails: model classifier on founder requests, internal Discover outputs and outbound drafts, fails closed", "Working", "guardrails.py, llm.py"),
+    ("Guardrails: model checks founder requests, Discover outputs, learning memos and outbound drafts; fails closed", "Working", "guardrails.py, llm.py"),
     ("Local model adapter (Ollama)", "Working", "llm.py"),
     ("Founder brief intake, with excluded product types refused", "Working", "agents/intake.py, app.py"),
     ("Web search (self-hosted SearXNG) and page fetch with quote check", "Working", "tools.py"),
@@ -60,7 +61,8 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
     ("Step gates in the browser: continue, repeat, go back, stop", "Working", "app.py, workflow.py"),
     ("Phase 2 Validate: Lean Canvas, landing page, demand target fixed in advance, STOP on weak demand", "Working", "agents/strategist.py, workflow.py"),
     ("Phase 4 Commercial setup: price options with sourced comparables, terms, privacy and refund policy drafts approved as sign actions", "Working", "agents/pricing.py, workflow.py"),
-    ("Phase 3 Build, 6 Operate", "STUBBED", "agents not built"),
+    ("Phase 3 Build", "STUBBED", "agent not built"),
+    ("Phase 6 Operate: recorded-data learning review, no live analytics", "Working", "agents/operator.py, workflow.py"),
     ("Phase 5 Launch: store page and launch post drafts into the approval queue", "Working", "agents/launcher.py, workflow.py"),
     ("Approving or rejecting the exact text in the browser, export as copy-ready text", "Working", "app.py, approval.py"),
     ("Delivery to buyers", "MOCKED", "delivery.py: simulated order, idempotent delivery, refund revokes access"),
@@ -290,11 +292,17 @@ def _start_step(project_id: str, step: str) -> None:
                 wf.run_validate_step1(project_id)
             elif step == "commercial":
                 wf.run_commercial_setup(project_id)
-            else:
+            elif step == "launch":
                 wf.run_launch_drafts(project_id)
+            elif step == "operate":
+                wf.run_operate_review(project_id)
+            else:
+                raise WorkflowError("Unknown workflow step.")
         except Exception as exc:  # noqa: BLE001 - shown to the founder with a retry button
             failure = f"{type(exc).__name__}: {exc}"
-            if step == "launch":
+            if step == "operate":
+                wf._set_state(project_id, operate_stage="failed", error=failure)
+            elif step == "launch":
                 wf._set_state(project_id, launch_stage="failed", error=failure)
             elif step == "commercial":
                 wf._set_state(project_id, commercial_stage="failed", error=failure)
@@ -309,7 +317,9 @@ def _start_step(project_id: str, step: str) -> None:
             with _workflow_lock:
                 _running.discard(project_id)
 
-    if step == "launch":
+    if step == "operate":
+        wf._set_state(project_id, operate_stage="drafting", error=None)
+    elif step == "launch":
         wf._set_state(project_id, launch_stage="starting", error=None)
     elif step == "commercial":
         wf._set_state(project_id, commercial_stage="drafting", error=None)
@@ -396,7 +406,8 @@ def index() -> str:
         '<h1>Built to challenge your idea, <span class="hl">not flatter it.</span></h1>'
         '<p class="lead">Foundry researches your idea against real, fetched sources, scores it next to sharper '
         "alternatives and has a critic argue against it. When the evidence is weak, it says stop. "
-        "You make every decision.</p></section>"
+        "You make every decision.</p>"
+        '<p><a class="btn" href="/demo">Explore the recorded demo &rarr;</a></p></section>'
         f'{model}<section class="composer" id="new"><h2>Tell us about your idea</h2>'
         '<p class="sub">Start with one or two sentences. The more context you add, the sharper the critique.</p>'
         f"{_brief_form()}</section>"
@@ -405,8 +416,8 @@ def index() -> str:
         '<div class="notice" style="margin-top:40px"><span class="icon orange">i</span><p><strong>What this prototype does.</strong> '
         "Working: Discover (research, critic review, interview script), Validate (Lean Canvas, landing page, "
         "demand test against a target you fix in advance), Commercial setup (price and policy drafts) "
-        "and Launch drafts with your approval. "
-        "<strong>STUBBED</strong> (designed, not built): Build, Operate. "
+        "and Launch drafts with your approval, followed by a recorded-data learning review. "
+        "<strong>STUBBED</strong> (designed, not built): Build and live operating integrations. "
         "Delivery is <strong>MOCKED</strong>. There are no payments.</p></div>"
     )
     return _page("Challenge your idea", body, model_ready=None if llm["is_mock"] else bool(llm["ready"]))
@@ -427,6 +438,16 @@ def _stage_label(state: dict[str, Any], status: str) -> str:
     }
     if awaiting in labels:
         return labels[awaiting]
+    if state.get("operate_stage") == "awaiting decision":
+        return "Waiting for your decision on the learning review"
+    if state.get("operate_stage") == "drafting":
+        return "Drafting the learning review"
+    if state.get("operate_stage") == "failed":
+        return "Learning review failed; ready to retry"
+    if str(state.get("operate_stage", "")).startswith("gate decided"):
+        return "Learning review finished"
+    if state.get("launch_stage") == "gate decided: continue":
+        return "Launch reviewed; learning review next"
     if str(state.get("launch_stage", "")).startswith("gate decided"):
         return "Launch reviewed"
     if state.get("commercial_passed"):
@@ -514,6 +535,75 @@ def _workspace_records(project_id: str) -> dict[str, Any]:
     return {"project": project, "state": state, "claims": claims, "approvals": approvals, "entries": entries}
 
 
+@app.get("/demo", response_class=HTMLResponse)
+def recorded_demo() -> str:
+    """Read committed pipeline artifacts without creating a project or calling a model."""
+    root = (ROOT / "outputs").resolve()
+    try:
+        manifest = json.loads((root / "run_index.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="The recorded demo index is unavailable.") from exc
+    runs = manifest.get("runs") if isinstance(manifest, dict) else None
+    if not isinstance(runs, list) or not runs:
+        raise HTTPException(status_code=503, detail="No recorded pipeline runs are available.")
+    parts = [
+        '<section class="hero"><p class="kicker">Recorded demo · read only</p>'
+        '<h1>See the evidence and the decision</h1>'
+        '<p class="lead">These are actual committed pipeline outputs, not a new live run. '
+        'Opening this page does not call a model, create a project, approve anything or publish.</p></section>',
+        ui.alert(
+            "What these recordings do and do not show",
+            '<p>The first run demonstrates gate mechanics: the landing page was not published, so '
+            'its recorded zero is not a completed demand experiment or proof of zero demand. '
+            'The second run shows the critic recommending STOP on an idea it judged weak.</p>'
+            '<p>Historical outputs are preserved as generated. Some contain mistakes that newer '
+            'validators reject; quote provenance alone does not establish a correct interpretation. '
+            'Build remains STUBBED, delivery is MOCKED, and no payment took place.</p>',
+            tone="info",
+        ),
+    ]
+    documents = (
+        ("phase1_gate_decision.md", "Discover gate"),
+        ("phase2_gate_decision.md", "Validate gate"),
+        ("phase1_step1_opportunities.md", "Research, alternatives and critic review"),
+        ("phase1_step2_interview_script.md", "Interview script"),
+        ("phase2_step1_lean_canvas.md", "Lean Canvas and demand-test plan"),
+    )
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get("folder"), str):
+            raise HTTPException(status_code=503, detail="The recorded demo index is invalid.")
+        directory = (root / run["folder"]).resolve()
+        if not directory.is_relative_to(root):
+            raise HTTPException(status_code=503, detail="The recorded demo folder is invalid.")
+        parts.append(
+            '<section class="card" style="margin-top:24px">'
+            f'<p class="kicker">Recorded project {e(run.get("project_id", ""))}</p>'
+            f'<h2>{e(run.get("idea", "Recorded pipeline run"))}</h2>'
+            f'<p class="muted small">Started: {e(run.get("started_at", "not recorded"))}</p></section>'
+        )
+        found = False
+        for name, title in documents:
+            path = (directory / name).resolve()
+            if not path.is_relative_to(root):
+                raise HTTPException(status_code=503, detail="A recorded demo document is invalid.")
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise HTTPException(status_code=503, detail="A recorded demo document is unavailable.") from exc
+            found = True
+            open_ = " open" if "_gate_" in name else ""
+            parts.append(
+                f'<details class="fold"{open_}><summary>{e(title)}</summary>'
+                f'<div class="fold-body doc">{render_markdown(text)}</div></details>'
+            )
+        if not found:
+            raise HTTPException(status_code=503, detail="A recorded run has no readable artifacts.")
+    parts.append('<p style="margin-top:24px"><a class="btn btn-primary" href="/#new">Try your own brief</a></p>')
+    return _page("Recorded demo", "".join(parts))
+
+
 _REPORT_NOTICE = (
     "DRAFT — internal research only. This report is not founder approval or publishing, "
     "does not execute any action, and does not establish market validation or promise success."
@@ -525,7 +615,8 @@ def _workspace_sections(records: dict[str, Any]) -> list[tuple[str, str]]:
     stages = "\n".join(
         f"{label}: {state[key]}" for key, label in (
             ("validate_stage", "Validate stage"), ("commercial_stage", "Commercial setup stage"),
-            ("launch_stage", "Launch stage"), ("awaiting", "Waiting for"),
+            ("launch_stage", "Launch stage"), ("operate_stage", "Learning review stage"),
+            ("awaiting", "Waiting for"),
         ) if state.get(key)
     )
     facts = sum(c.claim_type == ClaimType.FACT for c in records["claims"])
@@ -559,14 +650,15 @@ def _workspace_sections(records: dict[str, Any]) -> list[tuple[str, str]]:
          f"Phase: {project.current_phase.value} | Status: {project.status.value}\n"
          f"Stage: {_stage_label(state, project.status.value)}\n"
          f"Persisted workflow stage: {state.get('stage') or 'not recorded'}\n{stages}\n"
-         "Build: STUBBED. Operate: STUBBED. Delivery: MOCKED. No payments.\n"
+         "Build: STUBBED. Operate: recorded-data review; live analytics STUBBED. Delivery: MOCKED. No payments.\n"
          "Commercial setup: Working (price and policy drafts). No live publishing connectors."),
         ("Demand target and results", demand + "\nOnly recorded real demand counts; MOCKED data is not evidence."),
         ("Approval status", "\n".join(
             f"{status}: {counts.get(status, 0)}" for status in ("pending", "approved", "rejected", "executed")
         ) + "\nExecuted means copy-ready export only, not live publishing."),
         ("Evidence", f"Verified FACT: {facts} | ASSUMPTION: {len(records['claims']) - facts}\n"
-         "FACT means a supporting quote matches a page fetched for this project, not independent proof.\n\n" + claims),
+         "FACT needs a supporting quote on a fetched page. Discover also reviews claim support; "
+         "other phases remain provenance-only. Neither is independent proof.\n\n" + claims),
         ("Activity and decisions", activity),
     ]
 
@@ -588,7 +680,7 @@ def _workspace_stage(project: ProjectRecord, state: dict[str, Any]) -> str:
         return _stage_label(state, project.status.value)
     if project.status.value != "active":
         return f"{project.current_phase.value.title()}: {project.status.value}"
-    for key, phase in (("launch_stage", "Launch"), ("commercial_stage", "Commercial setup"),
+    for key, phase in (("operate_stage", "Learning review"), ("launch_stage", "Launch"), ("commercial_stage", "Commercial setup"),
                        ("validate_stage", "Validate")):
         stage = str(state.get(key) or "")
         if not stage:
@@ -702,7 +794,7 @@ def project_workspace(project_id: str) -> str:
         '<p class="small muted">Most recent first. Open an event to see its recorded decision and sources.</p>'
         + (f'<ul style="padding:0">{activity}</ul>' if activity else '<p class="muted">No project actions or decisions recorded.</p>')
         + '</section><div class="notice"><span class="icon orange">i</span><p>'
-        'Build: STUBBED. Operate: STUBBED. Delivery: MOCKED. No payments. '
+        'Build: STUBBED. Operate: recorded-data review; live analytics STUBBED. Delivery: MOCKED. No payments. '
         'Commercial setup: Working (price and policy drafts). No live publishing connectors.</p></div>'
     )
     return _page("Evidence & activity", body)
@@ -798,6 +890,7 @@ def _stepper(state: dict[str, Any], status: str) -> str:
     awaiting = state.get("awaiting")
     approved = bool(state.get("discover_approved"))
     launch_done = str(state.get("launch_stage", "")).startswith("gate decided")
+    operate_done = str(state.get("operate_stage", "")).startswith("gate decided")
     passed = bool(state.get("validate_passed"))
     commercial = bool(state.get("commercial_passed"))
     step1_done = approved or awaiting in {"run_step2", "phase_gate"} or state.get("stage") == "drafting the interview script"
@@ -809,7 +902,8 @@ def _stepper(state: dict[str, Any], status: str) -> str:
         ("3 Build", "stub"),
         ("4 Commercial setup: price and policies", "done" if commercial else ("now" if passed else "")),
         ("5 Launch: drafts and approval", "done" if launch_done else ("now" if commercial else "")),
-        ("6 Operate", "stub"),
+        ("6 Operate: learning review", "done" if operate_done else
+         ("now" if state.get("launch_stage") == "gate decided: continue" else "")),
     ]
     if status == "stopped":
         items = [(name, "done" if css == "done" else ("stub" if css == "stub" else "")) for name, css in items]
@@ -817,6 +911,8 @@ def _stepper(state: dict[str, Any], status: str) -> str:
 
 
 def _running_kind(state: dict[str, Any]) -> str:
+    if state.get("launch_stage") == "gate decided: continue":
+        return "operate"
     if state.get("commercial_passed"):
         return "launch"
     if state.get("validate_passed"):
@@ -877,7 +973,7 @@ def project_page(project_id: str, unclear: str = "") -> str:
 
     if project_id in _running:
         kind = _running_kind(state)
-        stage = {"launch": state.get("launch_stage"), "validate": state.get("validate_stage"),
+        stage = {"operate": state.get("operate_stage"), "launch": state.get("launch_stage"), "validate": state.get("validate_stage"),
                  "commercial": state.get("commercial_stage")}.get(kind, state.get("stage"))
         parts.append(ui.working_card(str(stage or "starting"), _running_kind(state)))
         return _page(project.name, "".join(parts) + footer, refresh=3)
@@ -938,8 +1034,14 @@ def project_page(project_id: str, unclear: str = "") -> str:
         parts.append('<section class="decision"><p class="kicker">Stopped</p><h2>You stopped this project.</h2>'
                      '<p class="hint">Stopping on weak evidence is a result, not a failure.</p>'
                      '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>')
-        latest = "phase2_gate_decision.md" if _own_output(project_id, "phase2_gate_decision.md") else "phase1_gate_decision.md"
+        latest = next(
+            (name for name in ("phase6_gate_decision.md", "phase2_gate_decision.md", "phase1_gate_decision.md")
+             if _own_output(project_id, name)),
+            "phase1_gate_decision.md",
+        )
         parts.append(_doc(project_id, latest))
+    elif state.get("launch_stage") == "gate decided: continue":
+        parts.append(_operate_section(wf, project, state))
     elif state.get("commercial_passed"):
         parts.append(_launch_section(wf, project, state))
     elif state.get("validate_passed"):
@@ -954,6 +1056,53 @@ def _research_fold(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) 
     if not view:
         return ""
     return f'<details class="fold" style="margin-top:20px"><summary>Research from step 1</summary><div class="fold-body">{view}</div></details>'
+
+
+def _operate_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
+    project_id = project.id
+    stage = state.get("operate_stage")
+    parts = [
+        '<section class="decision"><p class="kicker">Operate and learn</p>'
+        '<h2>Learn from recorded evidence</h2>'
+        '<p class="hint">Review the demand you recorded, sourced claims and draft approvals. '
+        'Exports are not published posts or sales. Delivery is MOCKED; Build and live analytics '
+        'remain STUBBED. This review cannot establish product usage, revenue or retention.</p>',
+    ]
+    if stage in (None, "ready", "failed", "drafting"):
+        if stage == "drafting":
+            parts.append(
+                '<p>The previous review was interrupted. You can explicitly retry it below.</p>'
+            )
+        parts.append(
+            '<p>The operator will identify gaps and propose measurable next experiments. '
+            'It cannot execute them or change your project without your decision.</p>'
+            f'<form method="post" action="/projects/{e(project_id)}/run/operate" style="margin-top:18px">'
+            '<button class="btn btn-primary btn-lg" type="submit">Review what we learned</button>'
+            '</form>'
+        )
+    elif stage == "awaiting decision":
+        parts.append(
+            '<h3>Your decision: learning review</h3>'
+            f'<p>Recommendation: <strong>{e(str(state.get("operate_recommendation", "")).upper())}</strong>. '
+            f'{e(state.get("operate_reason", ""))}</p>'
+            '<p class="hint">Continue acknowledges this review only; it does not pass Build or publish anything. '
+            'Repeat drafts a new review. Go back reopens the Launch review. Stop halts the project.</p>'
+            + _choice_buttons(project_id, STEP_CHOICES, action="operate-gate", typed=False)
+        )
+    elif stage == "gate decided: continue":
+        parts.append(
+            '<p>Your learning review is complete. No experiments were run automatically, '
+            'and the project has not been marked as a completed six-phase venture.</p>'
+            '<a class="btn" href="/#new">Start a new brief</a>'
+        )
+    else:
+        parts.append(ui.alert(
+            "The learning review state is not recognized.",
+            '<p>No step was started. Check the Evidence &amp; activity page before continuing.</p>',
+        ))
+    parts.append('</section>')
+    parts.append(_doc(project_id, "phase6_step1_pivot_memo.md", "Learning memo"))
+    return "".join(parts)
 
 
 def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
@@ -987,7 +1136,8 @@ def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any])
         parts.append('<section class="decision" style="margin-top:20px"><p class="kicker">Done</p><h2>Launch review finished</h2>'
                      f'<p style="margin-top:12px">Your decision: {ui.pill(choice.upper(), "solid")}. Approved drafts are saved as '
                      "copy-ready text files in the <code>outputs</code> folder for you to post yourself.</p>"
-                     '<p class="hint">This is as far as the prototype goes: Operate is STUBBED.</p>'
+                     '<p class="hint">Only Continue opens the recorded-data learning review. '
+                     'Build and live analytics remain STUBBED.</p>'
                      '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>')
     elif pending:
         parts.append(f'<div class="notice" style="margin-top:16px"><span class="icon purple">{pending}</span><p>'
@@ -1260,6 +1410,15 @@ def launch_gate(project_id: str, choice: str = Form(...)):
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
+@app.post("/projects/{project_id}/operate-gate")
+def operate_gate(project_id: str, choice: str = Form(...)):
+    try:
+        get_workflow().decide_operate_review(project_id, choice)
+    except (WorkflowError, OrchestratorError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
 @app.post("/projects/{project_id}/decide")
 def decide(project_id: str, choice: str = Form(""), reply: str = Form("")):
     """The only way a gate is passed: a founder action in this UI."""
@@ -1289,6 +1448,15 @@ def decide(project_id: str, choice: str = Form(""), reply: str = Form("")):
 def run_step(project_id: str, step: str):
     wf = get_workflow()
     state = wf.get_state(project_id)
+    if step == "operate":
+        project = wf.orch.get_project(project_id)
+        if (project is None or project.status.value != "active"
+                or project_id in _running
+                or state.get("launch_stage") != "gate decided: continue"
+                or state.get("operate_stage") not in (None, "ready", "failed", "drafting")):
+            raise HTTPException(status_code=409, detail="The learning review cannot be started now.")
+        _start_step(project_id, "operate")
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
     if step == "commercial":
         if not state.get("validate_passed") or state.get("commercial_stage") not in (None, "ready", "failed"):
             raise HTTPException(status_code=409, detail="Commercial setup cannot be started now.")

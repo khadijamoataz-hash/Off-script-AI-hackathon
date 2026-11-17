@@ -8,7 +8,7 @@ A second committed run shows the system itself judging an idea weak: for a paid 
 
 What you can check in this repository:
 
-- **Evidence, not opinion:** a claim counts as sourced only if its quote is found on a page fetched in that run; otherwise it is labelled `ASSUMPTION`. In the demo run, 7 of 7 claims were sourced: [outputs/phase1_step1_opportunities.md](outputs/phase1_step1_opportunities.md).
+- **Evidence, not opinion:** a sourced claim needs a quote from a page fetched in that run. New Discover runs additionally review whether that quote supports the claim; unsupported or uncertain interpretations remain `ASSUMPTION`. The historical demo predates that semantic review and recorded 7 provenance-matched claims: [outputs/phase1_step1_opportunities.md](outputs/phase1_step1_opportunities.md).
 - **Founder in control:** nothing is published, sent or signed until the founder approves the exact text; each approval is a signed, single-use token bound to that text ([approval.py](approval.py)).
 - **Tamper-evident record:** every agent action is in a hash-chained [decision_log.json](decision_log.json); `python scripts/verify_decision_log.py` checks it.
 - **Guardrails measured:** the previous 51-case founder-request and outbound-draft suite passed in each of 3 repeated runs, including Arabic: [evals/results.md](evals/results.md). New internal-output cases are separate from that measurement.
@@ -21,6 +21,8 @@ docker compose up
 ```
 
 Then open http://localhost:8000.
+
+For an immediate, read-only walkthrough, open http://localhost:8000/demo. It displays the actual committed research and gate decisions without a model call or a database import. Historical mistakes and the difference between a gate demonstration and a real demand experiment are labelled; this is not a live run.
 
 The first start downloads the open-weight model (`qwen3.5:9b`, about 7.6 GB) in the background. The page says the model is not ready until the download finishes. No API key or account is needed. Enter a founder brief on the home page; `/status` shows live checks and what is mocked.
 
@@ -43,7 +45,8 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 |---|---|---|
 | Founder brief intake; physical goods and other excluded product types are rejected immediately, before any research | **Working** | `agents/intake.py`, `app.py` |
 | Web search (self-hosted SearXNG, no key) and page fetch | **Working** | `tools.py`, `searxng/` |
-| Evidence store: a claim is sourced only if its page was fetched and contains the quote, otherwise `ASSUMPTION` | **Working** | `evidence.py` |
+| Evidence store: fetched-page quote matching; Discover also checks claim support with the model, downgrading unsupported or uncertain interpretations to `ASSUMPTION` with a logged reason | **Working**; model review is fallible, and other phases/direct ledger APIs remain provenance-only | `evidence.py`, `guardrails.py`, `workflow.py` |
+| Recorded demo playback: actual committed outputs, no model call, approval or database mutation | **Working** | `/demo`, `app.py` |
 | Project Evidence & activity workspace and internal Markdown report download: project-scoped claims, demand results, approval statuses and decisions, without model calls or approval side effects | **Working** | `app.py` |
 | Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script; schema checks reject ambiguous recommendations and common hypothetical or product-pitch questions | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
 | Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
@@ -53,7 +56,7 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Phase 5 Launch: store page and launch post drafts, queued for approval; opens only after Commercial setup passes | **Working**; Build is stubbed, so drafts use the Discover, Validate and Commercial setup results | `agents/launcher.py`, `workflow.py` |
 | Approve or reject the exact text in the browser; approved text is exported as a copy-ready file | **Working** | `app.py`, `approval.py` |
 | Phase 5 Launch: automatic delivery to buyers | **MOCKED** | `delivery.py`: simulated order, no payment |
-| Phase 6 Operate and learn | **STUBBED** | not built |
+| Phase 6 Operate and learn: internal learning memo from recorded demand, evidence and draft decisions; measurable next experiments and founder gate | **Working** after Launch is explicitly continued; live analytics and support connectors remain **STUBBED** | `agents/operator.py`, `workflow.py` |
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (no model needed) | **Working** | `guardrails.py` |
@@ -62,11 +65,11 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
 
-Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Discover research, critic reviews and interview scripts now pass dedicated internal-analysis checks for outcome promises and fabricated proof before use or export; this is not a general factual-accuracy check. Both model checks receive the whole structured output; payloads over 20,000 characters are blocked rather than truncated. Other internal phases do not yet have these dedicated checks. Because Phase 3 is stubbed, a project that passes Validate stays recorded at Build while Commercial setup and Launch drafting run. The policy drafts are not legal advice and say so. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
+Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Discover research, critic reviews, interview scripts and the Operate learning memo pass dedicated internal-analysis checks for outcome promises and fabricated proof before use or export; this is not a general factual-accuracy check. Both model checks receive the whole structured output; payloads over 20,000 characters are blocked rather than truncated. Other internal phases do not yet have these dedicated checks. Because Phase 3 is stubbed, a project that passes Validate stays recorded at Build while Commercial setup, Launch drafting and the learning review run; acknowledging a memo does not complete the six-phase state machine. The policy drafts are not legal advice and say so. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not. Draft exports and MOCKED delivery do not establish product traction.
 
 Discover's question checks cover common English patterns, not every leading question or language; the founder still reviews the script. Invalid recommendations and questions use the model's existing repair retries. If repair fails, the step reports an error instead of exporting the invalid result or opening its gate.
 
-Evidence matching ignores numeric citation markers such as `[12]` but preserves bracketed words such as negations. A matched quote verifies that the passage was fetched; it does not establish that the agent's interpretation follows from it. The founder should review the supporting quote before relying on a claim.
+Evidence matching ignores numeric citation markers such as `[12]` but preserves bracketed words such as negations. Discover's two-pass claim-support review checks the interpretation against that matched quote and records downgrade reasons in the decision log. This is still a small-model judgment, not independent fact-checking; other phases and direct ledger APIs only establish provenance. The founder should review the supporting quote before relying on a claim.
 
 ## Architecture
 
@@ -105,6 +108,6 @@ Measured on the committed demo run (`outputs/`, `decision_log.json`): 10 agent m
 - **Maintainers:** the Foundry team maintains the repository under Apache-2.0. Every pull request needs a passing test run (GitHub Actions, no model or paid service needed) and a review from a maintainer; changes to guardrails or approval code also need a new or updated eval case.
 - **Cost to keep running:** about $0.00 per run. The model runs locally through Ollama and search runs in a local SearXNG container, so there are no servers, API keys or subscriptions to pay for.
 - **How to contribute:** add an agent (`agents/` with its prompt in `prompts/` and tests), add a guardrail eval case (`evals/`), or write a playbook for a product type. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
-- **Roadmap:** the `STUBBED` phases (Build, Operate) first, then a stronger guardrail model, wider evals and community playbooks. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Roadmap:** the `STUBBED` Build phase and live operating integrations first, then a stronger guardrail model, wider evals and community playbooks. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Funding (`ASSUMPTION`, not yet validated):** a hosted version for founders who cannot run a model; licences and support for incubators and university venture programmes; GitHub Sponsors or Open Collective for maintenance.
 - **Never paywalled:** the core features, the guardrails and the founder approval steps stay free and open in every version.

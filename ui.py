@@ -390,7 +390,8 @@ def page(title: str, body: str, *, refresh: int | None = None, model: str = "", 
         '<a class="brand" href="/">'
         '<img class="brand-mark" src="/static/brand/logo-mark.png" alt="" width="32" height="34">'
         '<span class="brand-word">Foundry</span></a>'
-        f'<nav class="nav" aria-label="Primary">{chip}<a href="/#projects">Projects</a><a href="/status">System status</a>'
+        f'<nav class="nav" aria-label="Primary">{chip}<a href="/#projects">Projects</a>'
+        '<a href="/demo">Recorded demo</a><a href="/status">System status</a>'
         '<a class="cta" href="/#new">New idea</a></nav>'
         "</div></header>"
         f'<main id="main-content" tabindex="-1"><div class="wrap">{body}</div></main>'
@@ -514,17 +515,20 @@ STEP1_STAGES = (
     ("safety check", "Running the safety check on your brief"),
     ("searching and reading sources", "Searching the web and reading sources"),
     ("finding opportunities", "Sharpening the idea and scoring alternatives"),
+    ("checking claim support", "Checking whether fetched quotes actually support the claims"),
     ("critic review", "Critic review: risks, kill criteria, cheapest test"),
 )
 STEP2_STAGES = (("drafting the interview script", "Drafting the Mom Test interview script"),)
 LAUNCH_STAGES = (("drafting", "Drafting the store page and launch posts, then checking each draft with the guardrails"),)
 COMMERCIAL_STAGES = (("drafting", "Searching what similar products charge, drafting price options and the terms, privacy and refund policies, then checking each policy with the guardrails"),)
 VALIDATE_STAGES = (("drafting", "Drafting the Lean Canvas, demand-test plan, landing page and invite post, then checking the drafts with the guardrails"),)
+OPERATE_STAGES = (("drafting", "Reviewing recorded demand and draft approvals; identifying missing evidence and next experiments"),)
 
 
 def working_card(stage: str, kind: str) -> str:
     stages = {"step1": STEP1_STAGES, "step2": STEP2_STAGES, "launch": LAUNCH_STAGES,
-              "validate": VALIDATE_STAGES, "commercial": COMMERCIAL_STAGES}.get(kind, ())
+              "validate": VALIDATE_STAGES, "commercial": COMMERCIAL_STAGES,
+              "operate": OPERATE_STAGES}.get(kind, ())
     keys = [key for key, _ in stages]
     current = keys.index(stage) if stage in keys else 0
     items = ""
@@ -535,13 +539,14 @@ def working_card(stage: str, kind: str) -> str:
     title = {"step1": "Researching and challenging your idea", "step2": "Writing your interview script",
              "launch": "Drafting your launch material",
              "validate": "Designing the business and the demand test",
+             "operate": "Reviewing what the evidence actually says",
              "commercial": "Setting the price and drafting your policies"}.get(kind, "The agents are working")
     return (
         f'<section class="card working"><p class="kicker">The agents are working: {esc(stage or "starting")}</p>'
         f"<h2>{esc(title)}</h2>"
         '<div class="progress" aria-hidden="true"><span></span></div>'
         f'<ol class="live-steps">{items}</ol>'
-        '<p class="muted small" style="margin-top:18px">This usually takes one to two minutes. '
+        '<p class="muted small" style="margin-top:18px">Local model speed varies; research can take several minutes. '
         "The page updates by itself; you can leave it open.</p></section>"
     )
 

@@ -8,8 +8,10 @@ back to invented results: if search or a page is unreachable, the call raises To
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import socket
+from time import monotonic
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -23,6 +25,8 @@ USER_AGENT = "FoundryResearchBot/0.1 (open-source research assistant)"
 MAX_PAGE_BYTES = 1_500_000
 MAX_PAGE_CHARS = 20_000
 ALLOWED_CONTENT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
+SEARCH_BUDGET_SECONDS = 8.0
+FETCH_BUDGET_SECONDS = 10.0
 
 
 class ToolError(RuntimeError):
@@ -33,6 +37,30 @@ class SearchResult(BaseModel):
     title: str
     url: str
     snippet: str = ""
+
+
+def _remaining_time(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ToolError("HTTP latency budget exhausted.")
+    return remaining
+
+
+def _request_timeout(deadline: float) -> httpx.Timeout:
+    remaining = _remaining_time(deadline)
+    return httpx.Timeout(min(5.0, remaining), connect=min(2.0, remaining))
+
+
+def _read_body(response: httpx.Response, deadline: float) -> bytes:
+    # Read timeouts limit inactivity; checking elapsed time also catches slow-drip bodies.
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        _remaining_time(deadline)
+        body.extend(chunk)
+        if len(body) > MAX_PAGE_BYTES:
+            raise ToolError("Response exceeds the research byte budget; no partial source recorded.")
+    _remaining_time(deadline)
+    return bytes(body)
 
 
 def searxng_url() -> str:
@@ -55,18 +83,27 @@ def web_search(
     """Search the web through the local SearXNG container. No API key, no account."""
     if not query.strip():
         raise ToolError("Empty search query.")
+    deadline = monotonic() + SEARCH_BUDGET_SECONDS
     owns_client = client is None
-    client = client or httpx.Client(timeout=15.0)
+    client = client or httpx.Client()
     try:
-        response = client.get(
-            f"{searxng_url()}/search",
+        with client.stream(
+            "GET", f"{searxng_url()}/search",
             params={"q": query, "format": "json", "safesearch": 1},
             headers={"User-Agent": USER_AGENT},
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise ToolError(f"Web search is unavailable ({searxng_url()}): {exc}") from exc
+            timeout=_request_timeout(deadline),
+            follow_redirects=False,
+        ) as response:
+            response.raise_for_status()
+            body = _read_body(response, deadline)
+        payload = json.loads(body)
+        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            raise ValueError("Search response must contain a results list.")
+        if any(not isinstance(item, dict) for item in payload["results"]):
+            raise ValueError("Search results must be objects.")
+    except (httpx.HTTPError, ValueError, ToolError) as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        raise ToolError(f"Web search is unavailable ({searxng_url()}): {reason}") from exc
     finally:
         if owns_client:
             client.close()
@@ -170,14 +207,18 @@ def fetch_url(
 ) -> FetchedPage:
     """Fetch a public page, extract its text and record it in the ledger for this project."""
     url = url.strip()
+    deadline = monotonic() + FETCH_BUDGET_SECONDS
     owns_client = client is None
-    client = client or httpx.Client(timeout=15.0, follow_redirects=False)
+    client = client or httpx.Client(follow_redirects=False)
     try:
         current = url
         for _ in range(5):
             if check_public:
                 _assert_public_url(current)
-            with client.stream("GET", current, headers=REQUEST_HEADERS) as response:
+            with client.stream(
+                "GET", current, headers=REQUEST_HEADERS,
+                timeout=_request_timeout(deadline), follow_redirects=False,
+            ) as response:
                 if response.is_redirect and response.headers.get("location"):
                     current = str(response.url.join(response.headers["location"]))
                     continue
@@ -185,16 +226,12 @@ def fetch_url(
                 content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
                 if content_type and content_type not in ALLOWED_CONTENT_TYPES:
                     raise ToolError(f"Unsupported content type {content_type!r} at {url!r}")
-                body = b""
-                for chunk in response.iter_bytes():
-                    body += chunk
-                    if len(body) > MAX_PAGE_BYTES:
-                        break
+                body = _read_body(response, deadline)
                 encoding = response.encoding or "utf-8"
             break
         else:
             raise ToolError(f"Too many redirects for {url!r}")
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, ToolError) as exc:
         reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
         raise ToolError(f"Could not fetch {url!r}: {reason}") from exc
     finally:

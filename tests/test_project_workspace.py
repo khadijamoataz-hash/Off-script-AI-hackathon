@@ -107,7 +107,7 @@ def test_workspace_isolates_exact_project_and_shows_persisted_evidence(workspace
         assert f"{status}: 1" in text
     assert "Demand results recorded; waiting for your decision" in text
     assert "Waiting for your decision on the opportunities" not in text
-    assert "Build: STUBBED" in text and "Operate: STUBBED" in text and "Delivery: MOCKED" in text
+    assert "Build: STUBBED" in text and "Operate: recorded-data review" in text and "Delivery: MOCKED" in text
     assert "OTHER-PRIVATE" not in text and "Other private" not in text
 
 
@@ -219,6 +219,6 @@ def test_homepage_prototype_notice_matches_working_commercial_status(workspace, 
     })
     text = client.get("/").text
     assert "Commercial setup (price and policy drafts)" in text
-    assert "(designed, not built): Build, Operate." in text
+    assert "(designed, not built): Build and live operating integrations." in text
     assert "(designed, not built): Build, Commercial setup" not in text
     assert "Local model ready:" not in text

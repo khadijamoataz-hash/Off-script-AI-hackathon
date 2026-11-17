@@ -47,7 +47,8 @@ def test_page_has_focusable_skip_target_and_named_primary_navigation():
     nav = doc.find('.//nav[@aria-label="Primary"]')
     assert nav is not None
     assert [(a.get("href"), text(a)) for a in nav.findall("a")] == [
-        ("/#projects", "Projects"), ("/status", "System status"), ("/#new", "New idea")
+        ("/#projects", "Projects"), ("/demo", "Recorded demo"),
+        ("/status", "System status"), ("/#new", "New idea")
     ]
     assert not doc.findall(".//script")
 
@@ -139,7 +140,7 @@ def test_mobile_page_retains_navigation_and_shrinkable_project_cards():
     body = '<div class="proj-list"><a class="proj" href="/projects/one"><strong>' + "idea" * 100 + "</strong></a></div>"
     doc = Document(ui.page("Projects", body, model="model" * 100)).root
     nav = doc.find(".//nav")
-    assert {a.get("href") for a in nav.findall("a")} == {"/status", "/#projects", "/#new"}
+    assert {a.get("href") for a in nav.findall("a")} == {"/status", "/#projects", "/demo", "/#new"}
     assert doc.find('.//a[@class="proj"]').get("href") == "/projects/one"
     styles = doc.find(".//style").text
     assert ".nav a:not(.cta){display:none}" not in styles

@@ -258,4 +258,5 @@ Build order:
 | Guardrails: secrets detector, keyword backstop, tool allowlist, model classifier failing closed; `evals/` with block and allow cases | Working |
 | Commercial setup: price options with sourced comparables, terms, privacy and refund drafts as `sign` approvals; Launch waits for it | Working |
 | Committed demo run (Discover and Validate, ending in STOP) | Done |
-| Build, Operate agents | Not built |
+| Operate: recorded-data learning memo and founder review; no live analytics or support connector | Working |
+| Build agent | Not built |

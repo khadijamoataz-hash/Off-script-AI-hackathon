@@ -6,6 +6,7 @@ validate, so the critic cannot simply agree.
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -44,7 +45,10 @@ def critique(
     adapter: LLMAdapter, brief: FounderBrief, option: Opportunity, claims: list[Claim]
 ) -> AgentResult[CriticOutput]:
     evidence_lines = [
-        f"- [{'FACT' if c.claim_type == ClaimType.FACT else 'ASSUMPTION'}] {c.text}" for c in claims
+        json.dumps({
+            "status": c.claim_type.value, "claim": c.text,
+            "source_url": c.source_url, "supporting_quote": c.quote,
+        }, ensure_ascii=False) for c in claims
     ] or ["- (no evidence recorded)"]
     facts = sum(1 for c in claims if c.claim_type == ClaimType.FACT)
     user_prompt = (

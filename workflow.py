@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from agents.critic import CriticOutput, critique
 from agents.launcher import LaunchDrafts, draft_launch, render_store_page
+from agents.operator import RecordedMetrics, render_operate_memo, review_operations
 from agents.pricing import POLICIES, PricingOutput, render_policy, set_price_and_policies
 from agents.strategist import CANVAS_BOXES, StrategyOutput, design_business, render_landing_page
 from agents.intake import EXCLUDED_LABELS, BriefScreen, FounderBrief, screen_brief
@@ -35,7 +36,7 @@ from agents.researcher import (
 )
 from approval import ActionStatus, OutboxError, ProposedAction
 from delivery import MockDeliveryService, run_mock_delivery_test
-from evidence import Claim, ClaimType, FetchedPage
+from evidence import Claim, ClaimType, FetchedPage, supported_quote
 from guardrails import (
     ClassifierCallable,
     PolicyCategory,
@@ -188,12 +189,15 @@ class Workflow:
                 kept.append(line)
         return "\n".join(kept)
 
-    def _check_internal_output(self, project_id: str, output: Any, agent: str) -> None:
+    def _check_internal_output(
+        self, project_id: str, output: Any, agent: str,
+        phase: str = PhaseName.DISCOVER.value,
+    ) -> None:
         """Refuse the entire structured output before it can become evidence or an artifact."""
         decision = self.engine.evaluate_text(
             output.model_dump_json(),
             PolicyContext(
-                project_id=project_id, phase=PhaseName.DISCOVER.value,
+                project_id=project_id, phase=phase,
                 surface="internal_output", metadata={"agent": agent},
             ),
         )
@@ -340,6 +344,7 @@ class Workflow:
         research = research_opportunities(self.adapter, brief, pages, excerpts)
         self._add_usage(project_id, research)
         self._check_internal_output(project_id, research.output, "researcher")
+        self._set_state(project_id, stage="checking claim support")
         claims = self._record_claims(project_id, research.output, pages)
         facts = [c for c in claims if c.claim_type == ClaimType.FACT]
         self.log.append(
@@ -499,18 +504,37 @@ class Workflow:
     def _record_claims(
         self, project_id: str, research: ResearchOutput, pages: list[FetchedPage]
     ) -> list[Claim]:
-        """Store each drafted claim. The ledger checks the quote against the fetched page."""
+        """Check provenance, then semantic support before persisting a Discover FACT."""
         claims: list[Claim] = []
         for draft in research.claims:
             url = None
             if draft.source_number is not None and 1 <= draft.source_number <= len(pages):
                 url = pages[draft.source_number - 1].url
-            claims.append(
-                self.ledger.add_claim(
-                    draft.text, project_id=project_id, linked_phase=PhaseName.DISCOVER.value,
-                    source_url=url, quote=draft.quote,
+            page = self.ledger.get_fetch(project_id=project_id, url=url)
+            quote = supported_quote(draft.quote, page.text) if page else None
+            review = None
+            if quote is not None:
+                review = self.engine.review_claim_support(
+                    draft.text, quote,
+                    PolicyContext(project_id=project_id, phase=PhaseName.DISCOVER.value),
                 )
+            claim = self.ledger.add_claim(
+                draft.text, project_id=project_id, linked_phase=PhaseName.DISCOVER.value,
+                source_url=url, quote=quote,
+                claim_type=ClaimType.FACT if review and review.safe else ClaimType.ASSUMPTION,
             )
+            claims.append(claim)
+            if review is not None:
+                self.log.append(
+                    action="review_claim_support", agent="evidence_reviewer", actor="system",
+                    phase=PhaseName.DISCOVER.value, project_id=project_id,
+                    decision=review.reason, outcome=claim.claim_type.value.lower(),
+                    sources=[url] if url else [], model=review.model, cost=0, evidence_ids=[claim.id],
+                    metadata={
+                        "surface": "claim_support", "claim": draft.text,
+                        "supporting_quote": quote, "confident": review.confident,
+                    },
+                )
         return claims
 
     # ------------------------------------------------------------------ step 2
@@ -1136,6 +1160,109 @@ class Workflow:
         )
         return self._set_state(project_id, launch_stage=f"gate decided: {choice}")
 
+    def run_operate_review(self, project_id: str) -> dict[str, Any]:
+        """Review recorded evidence after Launch approval; never infer live product traction."""
+        project = self.orch._require_project(project_id)
+        state = self.get_state(project_id)
+        if project.status != ProjectStatus.ACTIVE:
+            raise WorkflowError("A stopped or completed project cannot run a learning review.")
+        if state.get("launch_stage") != "gate decided: continue":
+            raise WorkflowError("The learning review needs an explicitly continued Launch gate.")
+        if state.get("operate_stage") not in (None, "ready", "failed", "drafting"):
+            raise WorkflowError("Review the existing learning memo before running another.")
+        artifact = project.phase_artifacts.get(PhaseName.DISCOVER.value)
+        if not artifact:
+            raise WorkflowError("The approved Discover option is missing.")
+        actions = self.orch.outbox.list_actions(project_id=project_id)
+        claims = self.ledger.list_claims(project_id=project_id)
+        metrics = RecordedMetrics(
+            recorded_demand_count=(
+                project.recorded_demand_signals if state.get("validate_results") else None
+            ),
+            demand_target=project.validate_evidence_target,
+            approved_drafts=sum(
+                a.status in {ActionStatus.APPROVED, ActionStatus.EXECUTED} for a in actions
+            ),
+            rejected_drafts=sum(a.status == ActionStatus.REJECTED for a in actions),
+            pending_drafts=sum(a.status == ActionStatus.PENDING for a in actions),
+            exported_drafts=sum(a.status == ActionStatus.EXECUTED for a in actions),
+            sourced_claims=sum(c.claim_type == ClaimType.FACT for c in claims),
+            assumptions=sum(c.claim_type == ClaimType.ASSUMPTION for c in claims),
+        )
+        started = time.monotonic()
+        self._set_state(project_id, operate_stage="drafting", error=None)
+        result = review_operations(
+            self.adapter, self._brief(project), Opportunity(**artifact["recommended_option"]), metrics
+        )
+        self._add_usage(project_id, result)
+        self._check_internal_output(
+            project_id, result.output, "operator", phase=PhaseName.OPERATE.value
+        )
+        memo_path = self._write(
+            project_id, "phase6_step1_pivot_memo.md", render_operate_memo(result.output, metrics)
+        )
+        self.log.append(
+            action="review_operations", agent="operator", actor="agent_proposal",
+            phase=PhaseName.OPERATE.value, project_id=project_id,
+            decision=f"Learning review recommends {result.output.recommendation}: {result.output.rationale}",
+            outcome="proposed", sources=[], model=result.model, cost=0,
+            metadata={"tokens": result.tokens, "recorded_metrics": metrics.model_dump()},
+        )
+        self.orch.save_phase_artifact(
+            project_id, PhaseName.OPERATE,
+            {"review": result.output.model_dump(), "recorded_metrics": metrics.model_dump()},
+            agent="operator", model=result.model,
+        )
+        files = state.get("files", [])
+        return self._set_state(
+            project_id, operate_stage="awaiting decision",
+            operate_recommendation=result.output.recommendation,
+            operate_reason=result.output.rationale, operate_metrics=metrics.model_dump(),
+            files=files if memo_path in files else files + [memo_path],
+            seconds_operate=round(time.monotonic() - started, 1),
+        )
+
+    def decide_operate_review(self, project_id: str, choice: str) -> dict[str, Any]:
+        if choice not in STEP_CHOICES:
+            raise WorkflowError(f"Choice must be one of {STEP_CHOICES}.")
+        project = self.orch._require_project(project_id)
+        state = self.get_state(project_id)
+        if project.status != ProjectStatus.ACTIVE or state.get("operate_stage") != "awaiting decision":
+            raise WorkflowError("There is no active learning review waiting for a decision.")
+        self.log.append(
+            action="operate_gate", agent="gate", actor="founder_approval",
+            phase=PhaseName.OPERATE.value, project_id=project_id,
+            decision=f"Founder chose '{choice}' after the recorded-data learning review.",
+            outcome=choice, sources=[], model=None, cost=0,
+            metadata={"system_recommendation": state.get("operate_recommendation")},
+        )
+        path = self._write(
+            project_id, "phase6_gate_decision.md",
+            "# Phase 6 gate decision: Operate and learn\n\n"
+            f"Project `{project_id}`\n\n"
+            f"**System recommendation:** {str(state.get('operate_recommendation', '')).upper()}\n\n"
+            f"**Founder decision:** {choice.upper()}\n\n"
+            "This is an internal learning review of recorded evidence, not live analytics. "
+            "Continue acknowledges the memo only; repeat permits another review; go back "
+            "reopens Launch review; stop halts the project. Build is STUBBED, delivery is "
+            "MOCKED, no payment took place, and the six-phase venture is not marked completed.\n",
+        )
+        files = state.get("files", [])
+        changes: dict[str, Any] = {
+            "operate_stage": f"gate decided: {choice}",
+            "files": files if path in files else files + [path],
+        }
+        if choice == "repeat":
+            changes["operate_stage"] = "ready"
+        elif choice == "go_back":
+            changes.update(operate_stage=None, launch_stage="awaiting approvals")
+        elif choice == "stop":
+            self.orch.decide_gate(
+                project_id, GateOutcome.STOP, founder_approved=True,
+                rationale="Founder stopped after the recorded-data learning review.",
+            )
+        return self._set_state(project_id, **changes)
+
     def _write_decision(self, project: ProjectRecord, state: dict[str, Any], decision: str) -> None:
         self._write(project.id, 
             "phase1_gate_decision.md",
@@ -1204,7 +1331,9 @@ def render_opportunities(
         "## Market",
         research.market_definition,
         "## Claims and evidence",
-        "A claim is Sourced only if the page was fetched in this run and contains the quote. "
+        "A claim is Sourced only if the page was fetched in this run, contains the quote, "
+        "and the claim-support review cleared the claim against that exact quote. "
+        "Model review is fallible, not a guarantee of truth. "
         "Scores and the market definition above are the agents' judgement, not sourced facts.",
         render_claims(claims),
     ]

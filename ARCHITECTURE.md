@@ -26,7 +26,7 @@ flowchart TD
 
 ## Phases
 
-Each phase lists its agents, tools, method and output. Output files go to `outputs/` as `phase<N>_step<M>_<name>` and `phase<N>_gate_<name>`. Phase 1 (Discover), Phase 2 (Validate), Phase 4 (Commercial setup) and the Phase 5 drafting, approval and mocked delivery steps are **Working**; the agents for Phases 3 and 6 are **STUBBED**. See Built vs. stubbed.
+Each phase lists its agents, tools, method and output. Output files go to `outputs/` as `phase<N>_step<M>_<name>` and `phase<N>_gate_<name>`. Discover, Validate, Commercial setup, Launch drafting and the recorded-data Operate review are **Working**; Build and live operating integrations are **STUBBED**. See Built vs. stubbed.
 
 ### Phase 1: Discover
 
@@ -80,17 +80,15 @@ Each phase lists its agents, tools, method and output. Output files go to `outpu
 
 ### Phase 6: Operate and learn
 
-**Status: `STUBBED`** (designed, not built in the prototype).
+**Status: `Working` for an internal learning review; live analytics and support connectors are `STUBBED`.**
 
 - **Core step:** none in the problem statement; this phase closes the loop.
 - **Agents:** `agents/operator.py`.
-- **Tools:** the evidence store, the approval queue, and figures the founder enters or imports as a file (sales count, refunds, support questions, traffic). Foundry connects to no store or payment account.
-- **Method:**
-  1. *Support.* For each customer question the founder pastes in, the operator drafts a reply in the founder's voice. Each reply is a `support_reply` action: the founder approves the exact text and sends it. Replies never promise results, offer refunds on the founder's behalf, or claim an action happened.
-  2. *Metrics.* The operator summarises the founder's figures against targets set before launch (for example a conversion rate or a refund rate). Numbers the founder did not provide are not estimated; missing data is listed as missing.
-  3. *Persevere or pivot memo.* The memo gives the evidence for and against each option (persevere, pivot to a narrower customer or a different format, stop) and recommends one with a stated confidence. Kill criteria from Discover are checked again here.
-- **Gate:** the founder chooses persevere, pivot back to an earlier phase, or stop. The choice is logged with `approved_by: "founder"`.
-- **Output:** `phase6_step1_pivot_memo.md`, plus approved support replies as copy-ready files.
+- **Tools:** read-only snapshots of this project's recorded demand, frozen target, evidence counts and draft approval/export counts. No store, payment account or analytics service is connected.
+- **Method (Working):** after the founder explicitly continues the Launch gate, the operator reviews those recorded facts and their limits, recommends repeat, pivot or stop, and proposes bounded $0 experiments with a sample size, success threshold and duration. The metrics table is rendered by code, not invented by the model. Founder-recorded demand is not independently verified; exported drafts are not published posts or sales, and delivery is `MOCKED`. Missing usage, revenue and retention remain missing. Internal-output guardrails check the memo before persistence.
+- **Gate:** continue acknowledges the memo only; repeat permits a fresh review; go back reopens the Launch review; stop halts the project. Every choice is logged with `approved_by: "founder"`. Because Build is still stubbed, this review does not advance the recorded Build phase or mark the venture completed.
+- **STUBBED:** customer support replies, imported operating metrics and live telemetry.
+- **Output:** `phase6_step1_pivot_memo.md`, `phase6_gate_decision.md`.
 
 ## Gates
 
@@ -156,8 +154,8 @@ reconciliation: orders == payments - fees == payouts, mismatches listed for the 
 
 1. The founder submits a brief. A brief containing a password, key or card number is refused and not stored. Otherwise the orchestrator creates a project and logs it.
 2. Before any agent runs, guardrails read the brief as a founder request: keyword backstop, then the model classifier (two differently framed checks at temperature 0 with a fixed seed to reduce variation, not guarantee identical answers; any failure or doubt blocks). A refused request is logged and shown to the founder with the reason.
-3. An agent runs a step: it calls the local model and allowlisted tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source that contains its quote is stored as `ASSUMPTION`. Quote normalization ignores numeric citations but preserves bracketed words, including negations. Quote matching verifies passage provenance, not whether the passage entails the agent's interpretation; that remains a founder review task. The agent returns a typed result.
-4. Discover research, critic reviews and interview scripts pass two dedicated internal-output model checks before use or export. These distinguish analysis and `do_not_ask` counterexamples from outcome promises or fabricated proof; uncertainty, model failure or an output over 20,000 characters blocks the step without silently truncating it. Only accepted output is written to `outputs/`; actions and blocks are recorded in `decision_log.json` with `agent`, `action`, `sources`, `model`, `cost`, `approved_by` and a hash chain (`prev_hash`, `entry_hash`).
+3. An agent runs a step: it calls the local model and allowlisted tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source that contains its quote is stored as `ASSUMPTION`. Quote normalization ignores numeric citations but preserves bracketed words, including negations. Discover then uses two model checks to review whether each matched quote supports its claim: unsupported, uncertain or unavailable reviews downgrade the claim with a logged reason. This review is fallible, not independent fact-checking; the other phases and direct ledger APIs remain provenance-only. The agent returns a typed result.
+4. Discover research, critic reviews, interview scripts and the Operate learning memo pass two dedicated internal-output model checks before use or export. These distinguish analysis and `do_not_ask` counterexamples from outcome promises or fabricated proof; uncertainty, model failure or an output over 20,000 characters blocks the step without silently truncating it. Only accepted output is written to `outputs/`; actions and blocks are recorded in `decision_log.json` with `agent`, `action`, `sources`, `model`, `cost`, `approved_by` and a hash chain (`prev_hash`, `entry_hash`).
 5. The gate is evaluated and a recommendation is shown. The founder decides; the decision is logged.
 6. Outbound items (post, email, listing, deploy, support reply, sign) pass the guardrails as agent output (keyword backstop and model classifier) and then enter the approval queue; a blocked draft is logged and never queued. Approval creates a signed, single-use token bound to the content hash; any edit cancels it. The executor verifies the token and writes copy-ready text to `outputs/`. `spend` has no executor.
 7. `scripts/verify_decision_log.py` checks the required keys and the hash chain.
@@ -166,6 +164,8 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 
 The project's **Evidence & activity** page reads the project's claims, demand target and results, approval statuses and decision timeline from those existing stores. Its downloadable Markdown report is an internal research snapshot, not an approved outbound draft. Both views filter records by the exact project id; neither runs a model, appends a decision, writes pipeline outputs, issues approval tokens or executes an action. Signing secrets and approval tokens are not included. The interface keeps navigation available on narrow screens, provides a skip-to-content link and respects reduced-motion preferences.
 
+The `/demo` page renders only an allowlist of committed Markdown artifacts from the run index. It does not initialize a workflow, call a model or change data. It preserves historical mistakes, distinguishes the unpublished-page gate demonstration from a real demand experiment, and excludes approval exports and tokens.
+
 ## Built vs. stubbed
 
 | Part | Status |
@@ -173,7 +173,7 @@ The project's **Evidence & activity** page reads the project's claims, demand ta
 | State machine, gates, STOP recommendation (`orchestrator.py`, `gates.py`) | Working |
 | Founder brief intake and excluded-product screening (`agents/intake.py`) | Working |
 | Web search through SearXNG and page fetch (`tools.py`) | Working |
-| Evidence store (`evidence.py`) | Working; a FACT needs a page fetched in the run that contains the quote |
+| Evidence store (`evidence.py`) | Working; quote provenance plus a separate model claim-support review in Discover. Unsupported or uncertain Discover interpretations stay ASSUMPTION; other phases/direct APIs are provenance-only |
 | Project Evidence & activity workspace and internal report download (`app.py`) | Working; read-only and project-scoped, no model call or approval action |
 | Phase 1 Discover agents and step runner (`agents/researcher.py`, `agents/critic.py`, `workflow.py`) | Working |
 | Step gates and approval screen in the browser (`app.py`) | Working |
@@ -184,9 +184,10 @@ The project's **Evidence & activity** page reads the project's claims, demand ta
 | Decision log (`decision_log.py`) | Working |
 | Approval queue and tokens (`approval.py`) | Working |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (`guardrails.py`) | Working; keyword rules are English only |
-| Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on the founder brief, internal Discover research/critic/interview outputs and drafts entering the approval queue; not a factual-accuracy or entailment verifier. Historical founder/outbound measurements are in `evals/results.md`; the new internal surface has separate regression tests and model-only eval cases |
+| Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on founder briefs, internal Discover outputs, learning memos and outbound drafts; a separate Discover claim-support surface checks interpretations, but none guarantees factual accuracy. Historical founder/outbound measurements are in `evals/results.md`; new surfaces have separate regression tests |
 | Model adapter (`llm.py`) | Working |
-| Phase 3 Build, Phase 6 Operate agents | STUBBED |
+| Phase 6 Operate recorded-data review (`agents/operator.py`) | Working; internal memo and founder gate, no live metrics, support connector or automatic experiments |
+| Phase 3 Build | STUBBED |
 | Sandboxed test runner, CLI | STUBBED |
 | Posting connectors | STUBBED by design (copy-ready text only) |
 | Payments, sale to cash | Not built; no payment code |
@@ -198,6 +199,6 @@ Done in the prototype: brief intake with immediate rejection of non-digital prod
 Next:
 
 1. Speed: shorter agent outputs and parallel checks, so a full run fits in about three minutes on a laptop.
-2. Guardrails: a stronger classifier model, dedicated checks on the remaining internal phases, wider repeated model evals, and claim-to-quote entailment checks.
-3. Build and Operate agents.
+2. Guardrails: a stronger classifier model, dedicated checks on the remaining internal phases, wider repeated model evals, and claim-support reviews beyond Discover.
+3. Build agent and live operating integrations.
 4. After the hackathon: community playbooks per product type, more search sources, and a hosted option for founders who cannot run a model.

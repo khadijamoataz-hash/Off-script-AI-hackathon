@@ -65,6 +65,23 @@ class ResearchOutput(BaseModel):
         raise ValueError("recommended must name one of the proposed option titles.")
 
 
+class ResearchDraft(ResearchOutput):
+    """Bound new generation without rejecting previously saved, larger research outputs."""
+
+    alternatives: list[Opportunity] = Field(min_length=2, max_length=2)
+    claims: list[ClaimDraft] = Field(min_length=3, max_length=3)
+    market_definition: str = Field(min_length=20, max_length=500)
+    recommended_reason: str = Field(min_length=10, max_length=300)
+
+    @field_validator("claims")
+    @classmethod
+    def claims_are_distinct(cls, claims: list[ClaimDraft]) -> list[ClaimDraft]:
+        texts = [" ".join(claim.text.split()).casefold() for claim in claims]
+        if len(set(texts)) != len(texts):
+            raise ValueError("Each of the three claims must state a distinct market claim.")
+        return claims
+
+
 HYPOTHETICAL_QUESTION = re.compile(
     r"\b(?:would|will|imagine|suppose|supposing|hypothetically)\b"
     r"|\bif you (?:could|were|had (?:unlimited|no|enough))\b"
@@ -107,11 +124,18 @@ def format_sources(pages: list[FetchedPage], excerpts: list[str]) -> str:
 def research_opportunities(
     adapter: LLMAdapter, brief: FounderBrief, pages: list[FetchedPage], excerpts: list[str]
 ) -> AgentResult[ResearchOutput]:
-    return run_agent(
+    result = run_agent(
         adapter,
         prompt_name="researcher",
         user_prompt=f"{brief.as_prompt()}\n\n{format_sources(pages, excerpts)}",
-        response_model=ResearchOutput,
+        response_model=ResearchDraft,
+    )
+    return AgentResult(
+        output=ResearchOutput.model_validate(result.output.model_dump()),
+        model=result.model,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        attempts=result.attempts,
     )
 
 
