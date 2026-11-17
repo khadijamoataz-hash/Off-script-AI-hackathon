@@ -164,7 +164,7 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 
 The project's **Evidence & activity** page reads the project's claims, demand target and results, approval statuses and decision timeline from those existing stores. Its downloadable Markdown report is an internal research snapshot, not an approved outbound draft. Both views filter records by the exact project id; neither runs a model, appends a decision, writes pipeline outputs, issues approval tokens or executes an action. Signing secrets and approval tokens are not included. The interface keeps navigation available on narrow screens, provides a skip-to-content link and respects reduced-motion preferences.
 
-The `/demo` page renders only an allowlist of committed Markdown artifacts from the run index. It does not initialize a workflow, call a model or change data. It preserves historical mistakes, distinguishes the unpublished-page gate demonstration from a real demand experiment, and excludes approval exports and tokens.
+The `/demo` page renders only an allowlist of recorded Markdown artifacts from the run index. The bundled examples are committed; subsequent local runs may also appear. It does not initialize a workflow, call a model or change data. It preserves historical mistakes, distinguishes the unpublished-page gate demonstration from a real demand experiment, and excludes approval exports and tokens.
 
 ## Built vs. stubbed
 

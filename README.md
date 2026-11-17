@@ -22,7 +22,7 @@ docker compose up
 
 Then open http://localhost:8000.
 
-For an immediate, read-only walkthrough, open http://localhost:8000/demo. It displays the actual committed research and gate decisions without a model call or a database import. Historical mistakes and the difference between a gate demonstration and a real demand experiment are labelled; this is not a live run.
+For an immediate, read-only walkthrough, open http://localhost:8000/demo. It displays recorded research and gate decisions without a model call or a database import. The bundled examples are committed; later local runs may also appear. Historical mistakes and the difference between a gate demonstration and a real demand experiment are labelled; this is not a live run.
 
 The first start downloads the open-weight model (`qwen3.5:9b`, about 7.6 GB) in the background. The page says the model is not ready until the download finishes. No API key or account is needed. Enter a founder brief on the home page; `/status` shows live checks and what is mocked.
 
@@ -46,7 +46,7 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Founder brief intake; physical goods and other excluded product types are rejected immediately, before any research | **Working** | `agents/intake.py`, `app.py` |
 | Web search (self-hosted SearXNG, no key) and page fetch | **Working** | `tools.py`, `searxng/` |
 | Evidence store: fetched-page quote matching; Discover also checks claim support with the model, downgrading unsupported or uncertain interpretations to `ASSUMPTION` with a logged reason | **Working**; model review is fallible, and other phases/direct ledger APIs remain provenance-only | `evidence.py`, `guardrails.py`, `workflow.py` |
-| Recorded demo playback: actual committed outputs, no model call, approval or database mutation | **Working** | `/demo`, `app.py` |
+| Recorded demo playback: actual saved outputs, no model call, approval or database mutation | **Working** | `/demo`, `app.py` |
 | Project Evidence & activity workspace and internal Markdown report download: project-scoped claims, demand results, approval statuses and decisions, without model calls or approval side effects | **Working** | `app.py` |
 | Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script; schema checks reject ambiguous recommendations and common hypothetical or product-pitch questions | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
 | Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
@@ -81,9 +81,10 @@ A state machine moves a project through six phases: Discover, Validate, Build, C
 - No paid service, API key or account is required. No paid API is ever called.
 - To use a different open-weight model, set `FOUNDRY_MODEL` (see `.env.example`).
 - If the model is not available, model calls fail with an error. There is no mock fallback outside the tests.
+- Docker forwards the provider, reasoning, timeout, context-window and optional free-endpoint settings from `.env`; a rebuild/restart is needed to apply configuration changes.
 - Web search uses a SearXNG container started by the same command: no key, no account.
 - Speed: inside Docker on a Mac the model runs on CPU (several minutes per step). To use a host Ollama with GPU access, set `FOUNDRY_OLLAMA_URL=http://host.docker.internal:11434` in `.env`.
-- A bounded local check of one Discover step did not complete: research exceeded the benchmark's 55-second per-request limit, about 95 seconds after starting. This was not the production timeout; a complete run within three minutes remains unverified.
+- A bounded local run of Discover step 1 completed in 191 seconds with real `qwen3.5:9b` calls, exactly three claims and two alternatives. All three claims remained `ASSUMPTION`, and the critic recommended STOP. This measures one step, not six phases: the three-minute whole-run target is not met by this measurement.
 
 ## Cost per run
 

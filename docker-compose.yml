@@ -41,6 +41,12 @@ services:
       # for example one running on the host with GPU access.
       - FOUNDRY_OLLAMA_URL=${FOUNDRY_OLLAMA_URL:-http://ollama:11434}
       - FOUNDRY_MODEL=${FOUNDRY_MODEL:-qwen3.5:9b}
+      - FOUNDRY_LLM_PROVIDER=${FOUNDRY_LLM_PROVIDER:-auto}
+      - FOUNDRY_THINK=${FOUNDRY_THINK:-0}
+      - FOUNDRY_LLM_TIMEOUT=${FOUNDRY_LLM_TIMEOUT:-240}
+      - FOUNDRY_NUM_CTX=${FOUNDRY_NUM_CTX:-8192}
+      - FOUNDRY_OPENAI_BASE_URL=${FOUNDRY_OPENAI_BASE_URL:-http://ollama:11434/v1}
+      - FOUNDRY_OPENAI_API_KEY=${FOUNDRY_OPENAI_API_KEY:-}
       - FOUNDRY_SEARXNG_URL=http://searxng:8080
       - FOUNDRY_DB_PATH=/app/data/foundry.sqlite3
       - FOUNDRY_DECISION_LOG=/app/decision_log.json

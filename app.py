@@ -537,7 +537,7 @@ def _workspace_records(project_id: str) -> dict[str, Any]:
 
 @app.get("/demo", response_class=HTMLResponse)
 def recorded_demo() -> str:
-    """Read committed pipeline artifacts without creating a project or calling a model."""
+    """Read recorded pipeline artifacts without creating a project or calling a model."""
     root = (ROOT / "outputs").resolve()
     try:
         manifest = json.loads((root / "run_index.json").read_text(encoding="utf-8"))
@@ -549,7 +549,8 @@ def recorded_demo() -> str:
     parts = [
         '<section class="hero"><p class="kicker">Recorded demo · read only</p>'
         '<h1>See the evidence and the decision</h1>'
-        '<p class="lead">These are actual committed pipeline outputs, not a new live run. '
+        '<p class="lead">These are actual recorded pipeline outputs, not a new live run. '
+        'The bundled examples are committed; later local runs may also appear here. '
         'Opening this page does not call a model, create a project, approve anything or publish.</p></section>',
         ui.alert(
             "What these recordings do and do not show",
