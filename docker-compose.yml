@@ -19,7 +19,7 @@ services:
         condition: service_healthy
     environment:
       - OLLAMA_HOST=http://ollama:11434
-    entrypoint: ["ollama", "pull", "${FOUNDRY_MODEL:-qwen2.5:7b}"]
+    entrypoint: ["ollama", "pull", "${FOUNDRY_MODEL:-qwen3.5:9b}"]
     restart: "no"
 
   # Self-hosted metasearch: gives the agents web search with no API key and no account.
@@ -40,7 +40,7 @@ services:
       # Default: the Ollama container. Set FOUNDRY_OLLAMA_URL in .env to use another Ollama,
       # for example one running on the host with GPU access.
       - FOUNDRY_OLLAMA_URL=${FOUNDRY_OLLAMA_URL:-http://ollama:11434}
-      - FOUNDRY_MODEL=${FOUNDRY_MODEL:-qwen2.5:7b}
+      - FOUNDRY_MODEL=${FOUNDRY_MODEL:-qwen3.5:9b}
       - FOUNDRY_SEARXNG_URL=http://searxng:8080
       - FOUNDRY_DB_PATH=/app/data/foundry.sqlite3
       - FOUNDRY_DECISION_LOG=/app/decision_log.json

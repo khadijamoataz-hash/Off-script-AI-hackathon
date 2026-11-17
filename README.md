@@ -10,7 +10,7 @@ docker compose up
 
 Then open http://localhost:8000.
 
-The first start downloads the open-weight model (`qwen2.5:7b`, about 5 GB) in the background. The page says the model is not ready until the download finishes. No API key or account is needed. Enter a founder brief on the home page; `/status` shows live checks and what is mocked.
+The first start downloads the open-weight model (`qwen3.5:9b`, about 7.6 GB) in the background. The page says the model is not ready until the download finishes. No API key or account is needed. Enter a founder brief on the home page; `/status` shows live checks and what is mocked.
 
 Other commands:
 
@@ -53,7 +53,7 @@ A state machine moves a project through six phases: Discover, Validate, Build, C
 
 ## Models and free resources
 
-- Model: `qwen2.5:7b`, an open-weight model, run locally through Ollama. `docker compose up` starts Ollama and pulls the model.
+- Model: `qwen3.5:9b` (Apache-2.0), an open-weight model, run locally through Ollama. Its separate reasoning mode is off by default for speed; set `FOUNDRY_THINK=1` to turn it on. `qwen2.5:7b` also works (`FOUNDRY_MODEL=qwen2.5:7b`): it was as fast in our measurements but missed one more guardrail test. `docker compose up` starts Ollama and pulls the model.
 - No paid service, API key or account is required. No paid API is ever called.
 - To use a different open-weight model, set `FOUNDRY_MODEL` (see `.env.example`).
 - If the model is not available, model calls fail with an error. There is no mock fallback outside the tests.

@@ -230,7 +230,7 @@ Also at the root: `README.md` (the seven headings, in order), `ARCHITECTURE.md` 
 
 ## 9. Models, cost and build order
 
-- Default model: `qwen2.5:7b` through Ollama, pulled on first `docker compose up`. No API key needed.
+- Default model: `qwen3.5:9b` through Ollama, pulled on first `docker compose up`. No API key needed.
 - Optional: any free open-weight endpoint (for example GPT-OSS 20B or 120B) through the OpenAI-compatible setting in `.env`. Paid APIs are never used.
 - No silent fallback: if no model is reachable, model calls fail. The offline provider is for tests only.
 - Every model call logs its model and cost (`0` for local). The README reports cost per run and token count from a real run.
