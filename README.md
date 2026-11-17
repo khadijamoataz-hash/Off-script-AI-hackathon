@@ -40,7 +40,7 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Founder brief intake; physical goods and other excluded product types are rejected immediately, before any research | **Working** | `agents/intake.py`, `app.py` |
 | Web search (self-hosted SearXNG, no key) and page fetch | **Working** | `tools.py`, `searxng/` |
 | Evidence store: a claim is sourced only if its page was fetched and contains the quote, otherwise `ASSUMPTION` | **Working** | `evidence.py` |
-| Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
+| Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script; schema checks reject ambiguous recommendations and common hypothetical or product-pitch questions | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
 | Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
 | Phase 2 Validate: Lean Canvas (each box sourced or `ASSUMPTION`), landing page and invite post for approval, demand target fixed before the test, STOP below half the target | **Working** | `agents/strategist.py`, `workflow.py` |
 | Phase 3 Build: build the product | **STUBBED** | not built |
@@ -58,6 +58,8 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Payments | None | no payment code exists, not even sandbox |
 
 Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phase 3 is stubbed, a project that passes Validate stays recorded at Build while Commercial setup and Launch drafting run. The policy drafts are not legal advice and say so. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
+
+Discover's question checks cover common English patterns, not every leading question or language; the founder still reviews the script. Invalid recommendations and questions use the model's existing repair retries. If repair fails, the step reports an error instead of exporting the invalid result or opening its gate.
 
 ## Architecture
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+import re
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agents import AgentResult, run_agent
 from agents.intake import FounderBrief
@@ -47,8 +49,30 @@ class ResearchOutput(BaseModel):
     def options(self) -> list[Opportunity]:
         return [self.sharpened_idea, *self.alternatives]
 
+    @model_validator(mode="after")
+    def unambiguous_recommendation(self) -> "ResearchOutput":
+        titles = [" ".join(option.title.split()).casefold() for option in self.options()]
+        if len(set(titles)) != len(titles):
+            raise ValueError("Each option must have a distinct title.")
+        self.recommended_option()
+        return self
 
-HYPOTHETICAL_PHRASES = ("would you", "will you", "do you think you", "how much would")
+    def recommended_option(self) -> Opportunity:
+        wanted = " ".join(self.recommended.split()).casefold()
+        for option in self.options():
+            if " ".join(option.title.split()).casefold() == wanted:
+                return option
+        raise ValueError("recommended must name one of the proposed option titles.")
+
+
+HYPOTHETICAL_QUESTION = re.compile(
+    r"\b(?:would|will|imagine|suppose|supposing|hypothetically)\b"
+    r"|\bif you (?:could|were|had (?:unlimited|no|enough))\b"
+    r"|\bdo you think you\b"
+    r"|\b(?:are you planning|do you plan|are you going) to\b"
+    r"|\b(?:do you like|are you interested in) (?:our|my|this|the proposed) "
+    r"(?:product|app|tool|course|service|idea)\b",
+)
 
 
 class InterviewScript(BaseModel):
@@ -62,11 +86,11 @@ class InterviewScript(BaseModel):
     @classmethod
     def questions_are_about_the_past(cls, questions: list[str]) -> list[str]:
         for question in questions:
-            lowered = question.lower()
-            if any(phrase in lowered for phrase in HYPOTHETICAL_PHRASES):
+            normalized = " ".join(question.split()).casefold()
+            if HYPOTHETICAL_QUESTION.search(normalized):
                 raise ValueError(
-                    f"Question breaks The Mom Test (hypothetical or future): {question!r}. "
-                    "Ask what the person actually did in the past instead."
+                    f"Question breaks The Mom Test (hypothetical, future or product pitch): "
+                    f"{question!r}. Ask what the person actually did in the past instead."
                 )
         return questions
 

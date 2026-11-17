@@ -23,6 +23,8 @@ File: [`outputs/phase1_step2_interview_script.md`](../outputs/phase1_step2_inter
 
 A Mom Test script: questions about what people did in the past, and a list of questions not to ask (no pitching, no "would you buy").
 
+The historical script also contains a hypothetical question that the validator at the time missed. Current schema checks reject that pattern and request a repaired script before exporting it. The committed demo output is preserved as generated, not corrected by hand; these checks have been verified with scripted tests, not a new local-model demo run.
+
 ## 4. Demand target fixed before the test (12:59)
 
 Before Validate started, the founder fixed the target: **55 waitlist sign-ups from people in the target market**. It is written to the log (`set_evidence_target`, `fix_demand_target`) and cannot be lowered afterwards.
