@@ -9,7 +9,10 @@ from app import app
 
 def test_logo_is_served_and_shown_in_the_header() -> None:
     client = TestClient(app)
-    logo = client.get("/static/brand/logo.png")
-    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+    mark = client.get("/static/brand/logo-mark.png")
+    assert mark.status_code == 200 and mark.headers["content-type"] == "image/png"
     page = client.get("/status").text
-    assert '<a class="brand" href="/"><img class="brand-logo" src="/static/brand/logo.png" alt="Foundry"' in page
+    # Symbol image plus the name as real text; the link reads "Foundry" and goes home.
+    assert ('<a class="brand" href="/"><img class="brand-mark" src="/static/brand/logo-mark.png" alt=""'
+            in page)
+    assert '<span class="brand-word">Foundry</span></a>' in page

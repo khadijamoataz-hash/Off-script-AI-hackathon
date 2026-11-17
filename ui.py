@@ -62,10 +62,12 @@ code{font-family:var(--mono);font-size:.84em;background:var(--navy-50);color:var
 /* header and footer */
 .topbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.88);backdrop-filter:saturate(1.5) blur(14px);-webkit-backdrop-filter:saturate(1.5) blur(14px);border-bottom:1px solid var(--line)}
 .topbar .wrap{display:flex;align-items:center;gap:16px;height:64px}
-.brand{display:flex;align-items:center;gap:10px;color:var(--navy);font-weight:800;letter-spacing:.18em;font-size:15px;margin-right:auto}
+.brand{display:flex;align-items:center;gap:12px;color:var(--navy);line-height:1;margin-right:auto}
 .brand:hover{text-decoration:none}
-.brand-logo{display:block;height:40px;width:auto;max-width:none}
-@media(max-width:560px){.brand-logo{height:34px}}
+.brand-mark{display:block;height:34px;width:auto;flex:none}
+.brand-word{display:block;font-size:21px;font-weight:800;letter-spacing:.14em;margin-right:-.14em;text-transform:uppercase;color:var(--navy);line-height:1;padding-top:2px}
+.brand:hover .brand-word{color:var(--navy)}
+@media(max-width:560px){.brand{gap:10px}.brand-mark{height:30px}.brand-word{font-size:18px}}
 .nav{display:flex;align-items:center;gap:2px;min-width:0}
 .nav a{display:inline-flex;align-items:center;min-height:44px;color:var(--ink-2);font-size:14px;font-weight:550;padding:8px 12px;border-radius:9px;white-space:nowrap}
 .nav a:hover{background:var(--purple-50);color:var(--purple);text-decoration:none}
@@ -386,7 +388,8 @@ def page(title: str, body: str, *, refresh: int | None = None, model: str = "", 
         '<a class="skip-link" href="#main-content">Skip to main content</a>'
         '<header class="topbar"><div class="wrap">'
         '<a class="brand" href="/">'
-        '<img class="brand-logo" src="/static/brand/logo.png" alt="Foundry" width="173" height="40"></a>'
+        '<img class="brand-mark" src="/static/brand/logo-mark.png" alt="" width="32" height="34">'
+        '<span class="brand-word">Foundry</span></a>'
         f'<nav class="nav" aria-label="Primary">{chip}<a href="/#projects">Projects</a><a href="/status">System status</a>'
         '<a class="cta" href="/#new">New idea</a></nav>'
         "</div></header>"
