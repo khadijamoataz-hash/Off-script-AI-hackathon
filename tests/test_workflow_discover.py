@@ -270,3 +270,19 @@ def test_unsafe_draft_is_blocked_before_the_approval_queue(tmp_path: Path) -> No
     wf.run_discover_step2(pid); wf.decide_step(pid, "continue")
     state = wf.run_launch_drafts(pid)
     assert len(state["launch_blocked"]) == 1 and len(wf.launch_actions(pid)) == 2
+
+
+def test_a_second_run_never_overwrites_the_first(tmp_path: Path) -> None:
+    screen = {"excluded_category": "physical_goods", "reason": "Candles.", "search_queries": []}
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), screen])
+    first = wf.start_project(BRIEF).id
+    wf.run_discover_step1(first)
+    second = wf.start_project(BRIEF.model_copy(update={"idea": "Sell handmade scented candles"})).id
+    wf.run_discover_step1(second)
+
+    out = tmp_path / "outputs"
+    assert (out / "phase1_step1_opportunities.md").exists()
+    assert not (out / "phase1_gate_decision.md").exists()          # first run has not reached it
+    assert "REJECTED" in (out / second / "phase1_gate_decision.md").read_text()
+    index = json.loads((out / "run_index.json").read_text())
+    assert [(r["project_id"], r["folder"]) for r in index["runs"]] == [(first, "."), (second, second)]

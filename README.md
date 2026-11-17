@@ -40,7 +40,7 @@ python -m evals.run --model               # all guardrail evals through the loca
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (no model needed) | **Working** | `guardrails.py` |
-| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working** | `guardrails.py`, `llm.py`, results in `evals/results.md` |
+| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working**: 46 of 46 eval cases with `qwen3.5:9b` (34 attacks blocked, 12 normal requests allowed) | `guardrails.py`, `llm.py`, `evals/results.md` |
 | Local model adapter (Ollama) | **Working** | `llm.py` |
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
@@ -79,6 +79,6 @@ About $0.00 per run (local open-weight model, no paid API). Every entry in `deci
 ## How the project stays alive after the hackathon
 
 - **Maintainers:** the Foundry team maintains the repository under Apache-2.0 and reviews contributions.
-- **Roadmap:** phase agents for all six phases, the approval screen, guardrails with the model classifier on by default, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Roadmap:** agents for the phases that are still `STUBBED` (Validate, Build, Commercial setup, Operate), a stronger guardrail model and wider evals, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Community:** contributed agents, prompts (`prompts/`) and guardrail evals (`evals/`). The guardrail evals are public so anyone can check the safety rules.
 - **Funding (`ASSUMPTION`, not yet validated):** the core stays free and self-hosted. Possible income is a hosted version for founders who do not want to run a model, and licences and support for incubators and university venture programmes. Safety rules and core features are never paywalled.

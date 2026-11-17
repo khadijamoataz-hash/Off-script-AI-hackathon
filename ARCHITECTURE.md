@@ -152,9 +152,12 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 
 ## Roadmap
 
-1. Brief intake and Discover agents with fetched sources; step gates in the UI.
-2. Approval screen; Launch drafts through the approval queue; mocked delivery.
-3. Validate agent (Lean Canvas, landing page, pre-set target).
-4. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
-5. Build, Commercial setup and Operate agents.
-6. After the hackathon: self-hosted search, community playbooks per product type, a hosted option for founders who cannot run a model.
+Done in the prototype: brief intake with immediate rejection of non-digital products; Discover with fetched sources and step gates in the browser; the approval screen with Launch drafts and `MOCKED` delivery; guardrails with a fail-closed model classifier and public evals.
+
+Next:
+
+1. Validate agent: Lean Canvas, landing page, demand target fixed before the phase starts, STOP below half the target.
+2. Speed: shorter agent outputs and parallel checks, so a full run fits in about three minutes on a laptop.
+3. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
+4. Build, Commercial setup and Operate agents.
+5. After the hackathon: community playbooks per product type, more search sources, and a hosted option for founders who cannot run a model.

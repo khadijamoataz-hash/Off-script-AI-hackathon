@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -42,6 +43,8 @@ from gates import GateOutcome, PhaseName, ProjectStatus
 from llm import LLMAdapter, build_llm_safety_classifier
 from orchestrator import Orchestrator, ProjectRecord
 from tools import SearchResult, ToolError, fetch_url, web_search
+
+_INDEX_LOCK = threading.Lock()
 
 MAX_PAGES = 4
 EXCERPT_CHARS = 1400
@@ -183,9 +186,32 @@ class Workflow:
             tool, args, project_id=project_id, phase=PhaseName.DISCOVER.value
         ).allowed
 
-    def _write(self, name: str, content: str) -> str:
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        path = self.out_dir / name
+    def project_out_dir(self, project_id: str) -> Path:
+        """Where a project's files go. The first project owns the top of `outputs/`, which is
+        where the file names are expected; every later project gets `outputs/<project id>/`
+        so runs never overwrite each other. `outputs/run_index.json` lists them."""
+        with _INDEX_LOCK:
+            index_path = self.out_dir / "run_index.json"
+            index = json.loads(index_path.read_text()) if index_path.exists() else {"runs": []}
+            for run in index["runs"]:
+                if run["project_id"] == project_id:
+                    return self.out_dir / run["folder"]
+            folder = "." if not index["runs"] else project_id
+            project = self.orch.get_project(project_id)
+            index["runs"].append({
+                "project_id": project_id,
+                "folder": folder,
+                "idea": project.idea_summary if project else "",
+                "started_at": project.created_at if project else "",
+            })
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+            return self.out_dir / folder
+
+    def _write(self, project_id: str, name: str, content: str) -> str:
+        folder = self.project_out_dir(project_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
         path.write_text(content.rstrip() + "\n", encoding="utf-8")
         return str(path)
 
@@ -294,7 +320,7 @@ class Workflow:
         )
 
         recommendation, reason = discover_recommendation(critic.output, len(facts))
-        path = self._write(
+        path = self._write(project_id, 
             "phase1_step1_opportunities.md",
             self._scrub(project_id, phase, render_opportunities(
                 project, research.output, critic.output, claims, search_note,
@@ -341,7 +367,7 @@ class Workflow:
             outcome="stop", sources=[], model=None, cost=0, project_id=project.id,
             metadata={"excluded_category": screen.excluded_category, "rejected_by": "system"},
         )
-        path = self._write(
+        path = self._write(project.id, 
             "phase1_gate_decision.md",
             render_gate_decision(project, "stop", reason, founder_decision=None, excluded=True),
         )
@@ -457,12 +483,12 @@ class Workflow:
         )
         state = self.get_state(project_id)
         files = [
-            self._write(
+            self._write(project_id, 
                 "phase1_step2_interview_script.md",
                 self._scrub(project_id, PhaseName.DISCOVER.value,
                             render_interview_script(project, option, script.output)),
             ),
-            self._write(
+            self._write(project_id, 
                 "phase1_gate_decision.md",
                 render_gate_decision(
                     project, state.get("recommendation", "repeat"),
@@ -601,9 +627,9 @@ class Workflow:
             "option only. Product details are `ASSUMPTION` until those phases run."
         )
         files = [
-            self._write("phase5_step1_store_page.md",
+            self._write(project_id, "phase5_step1_store_page.md",
                         f"# Phase 5, step 1: store page draft\n\n{note}\n\n---\n\n{store_text}"),
-            self._write(
+            self._write(project_id, 
                 "phase5_step2_launch_posts.md",
                 f"# Phase 5, step 2: launch post drafts\n\n{note}\n\n"
                 + "\n\n".join(f"## {post.channel}\n\n{post.text}" for post in drafts.output.posts)
@@ -613,7 +639,7 @@ class Workflow:
         delivery_log = run_mock_delivery_test(
             MockDeliveryService(self.orch.db_path), project_id=project_id, product_name=option.title
         )
-        files.append(self._write("payment_test_log.md", delivery_log))
+        files.append(self._write(project_id, "payment_test_log.md", delivery_log))
         self.log.append(
             action="mock_delivery_test", agent="delivery", actor="system", phase=phase,
             decision="Ran the MOCKED delivery test (idempotent delivery, refund revokes access). "
@@ -644,6 +670,7 @@ class Workflow:
         if action.content_hash != seen_hash:
             raise WorkflowError("The content changed after it was shown. Review it again.")
         token = self.orch.outbox.approve_action(action_id)
+        self.orch.outbox.export_dir = self.project_out_dir(action.project_id)
         receipt = self.orch.outbox.execute_action(action_id, token)
         return receipt.export_path
 
@@ -676,7 +703,7 @@ class Workflow:
             sources=[], model=None, cost=0, project_id=project_id,
             metadata={"system_recommendation": recommendation},
         )
-        self._write(
+        self._write(project_id, 
             "phase5_gate_decision.md",
             "# Phase 5 gate decision: Launch\n\n"
             f"Project `{project.id}`: {project.idea_summary}\n\n"
@@ -694,7 +721,7 @@ class Workflow:
         return self._set_state(project_id, launch_stage=f"gate decided: {choice}")
 
     def _write_decision(self, project: ProjectRecord, state: dict[str, Any], decision: str) -> None:
-        self._write(
+        self._write(project.id, 
             "phase1_gate_decision.md",
             render_gate_decision(
                 project, state.get("recommendation", "repeat"),

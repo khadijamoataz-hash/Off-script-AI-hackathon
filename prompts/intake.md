@@ -23,7 +23,7 @@ Read the founder brief and do two things.
    even when those customers are shops, bakeries, gyms or factories that handle physical
    goods themselves. If the founder would make, cook, stock or ship the item, it is
    `physical_goods`.
-   Judge what is being sold, not the industry of the customer. If unsure between `none` and an
+   Decide by what is being sold, not by the industry of the customer. If unsure between `none` and an
    excluded category, choose the excluded category and say why.
 
 2. If the category is `none`, write 2 or 3 short web search queries (3 to 7 words each) that

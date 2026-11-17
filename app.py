@@ -436,8 +436,11 @@ def create_project(
 # ---------------------------------------------------------------------- project page
 
 
-def _read_output(name: str) -> str:
-    path = outputs_dir() / name
+def _read_output(name: str, project_id: str | None = None) -> str:
+    """Read an output file. With a project id, read it from that project's own folder
+    (see `Workflow.project_out_dir`); every run after the first has its own folder."""
+    folder = get_workflow().project_out_dir(project_id) if project_id else outputs_dir()
+    path = folder / name
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
@@ -446,14 +449,14 @@ def _own_output(project_id: str, name: str) -> str:
 
     Output files have fixed names, so a newer project's run replaces them; showing that file
     on an older project's page would show the wrong project's results."""
-    text = _read_output(name)
+    text = _read_output(name, project_id)
     return text if f"`{project_id}`" in text else ""
 
 
 def _doc(project_id: str, name: str, title: str = "", open_: bool = True) -> str:
     text = _own_output(project_id, name)
     if not text:
-        if _read_output(name) and title:
+        if _read_output(name, project_id) and title:
             return (f'<details class="fold"><summary>{e(title)}</summary><div class="fold-body"><p class="muted">'
                     f"<code>outputs/{e(name)}</code> now holds a newer project's results, so it is not shown here."
                     "</p></div></details>")
