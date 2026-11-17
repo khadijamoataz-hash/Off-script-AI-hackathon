@@ -119,7 +119,7 @@ reconciliation: orders == payments - fees == payouts, mismatches listed for the 
 ## Data flow
 
 1. The founder submits a brief. A brief containing a password, key or card number is refused and not stored. Otherwise the orchestrator creates a project and logs it.
-2. Before any agent runs, guardrails read the brief as a founder request: keyword backstop, then the model classifier (two differently framed checks; any failure or doubt blocks). A refused request is logged and shown to the founder with the reason.
+2. Before any agent runs, guardrails read the brief as a founder request: keyword backstop, then the model classifier (two differently framed checks at temperature 0 with a fixed seed, so the same text gets the same answer; any failure or doubt blocks). A refused request is logged and shown to the founder with the reason.
 3. An agent runs a step: it calls the local model and allowlisted tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source that contains its quote is stored as `ASSUMPTION`. The agent returns a typed result.
 4. The step output is written to `outputs/` and the action is appended to `decision_log.json` with `agent`, `action`, `sources`, `model`, `cost`, `approved_by` and a hash chain (`prev_hash`, `entry_hash`).
 5. The gate is evaluated and a recommendation is shown. The founder decides; the decision is logged.

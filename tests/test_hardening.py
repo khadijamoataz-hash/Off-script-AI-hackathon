@@ -92,3 +92,23 @@ def test_status_page_renders_and_is_honest() -> None:
     data = client.get("/api/status").json()
     assert data["redteam"]["passed"] == data["redteam"]["total"]
     assert data["decision_log"]["valid"] is True
+
+
+def test_checks_at_temperature_zero_use_a_fixed_seed(monkeypatch) -> None:
+    import llm
+
+    sent: list[dict] = []
+
+    class _Resp:
+        def raise_for_status(self) -> None: ...
+
+        def json(self) -> dict:
+            return {"message": {"content": "{}"}, "model": "m"}
+
+    monkeypatch.setattr(llm.httpx, "post", lambda url, json, timeout: sent.append(json) or _Resp())
+    provider = OllamaProvider(model="m", base_url="http://127.0.0.1:9")
+    monkeypatch.setattr(provider, "supports_thinking", lambda: False)
+    provider.chat(system_prompt="s", user_prompt="u", temperature=0.0)
+    provider.chat(system_prompt="s", user_prompt="u", temperature=0.2)
+    assert sent[0]["options"]["seed"] == 0
+    assert "seed" not in sent[1]["options"]

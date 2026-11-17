@@ -203,6 +203,11 @@ class OllamaProvider(LLMProvider):
         }
         if json_schema is not None:
             payload["format"] = json_schema
+        if temperature == 0:
+            # Checks that must give the same answer every time (safety classifier, product
+            # screening) also get a fixed seed. Agent drafts keep a random seed, so that
+            # "repeat" at a gate gives the founder a new attempt.
+            payload["options"]["seed"] = 0
         if self.supports_thinking():
             # Reasoning models spend many hidden tokens before answering. Off by default so a
             # run stays fast; set FOUNDRY_THINK=1 to turn it on.

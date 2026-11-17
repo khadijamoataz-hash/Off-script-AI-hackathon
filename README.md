@@ -20,6 +20,7 @@ python scripts/verify_decision_log.py     # check decision_log.json keys and has
 python scripts/run_delivery_test.py       # MOCKED delivery test, writes outputs/payment_test_log.md
 python -m evals.run                       # guardrail evals, rules only (no model needed)
 python -m evals.run --model               # all guardrail evals through the local model
+python -m evals.run --model --repeat 3    # the same, 3 times, to measure how stable the answers are
 ```
 
 ## What works and what is mocked
@@ -41,7 +42,7 @@ python -m evals.run --model               # all guardrail evals through the loca
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (no model needed) | **Working** | `guardrails.py` |
-| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working**: 46 of 46 eval cases with `qwen3.5:9b` (34 attacks blocked, 12 normal requests allowed) | `guardrails.py`, `llm.py`, `evals/results.md` |
+| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working**: 50 of 50 eval cases in each of 3 repeated runs with `qwen3.5:9b` (34 attacks blocked, 16 normal requests and briefs allowed, including Arabic) | `guardrails.py`, `llm.py`, `evals/results.md` |
 | Local model adapter (Ollama) | **Working** | `llm.py` |
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
