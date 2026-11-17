@@ -22,6 +22,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -64,6 +65,8 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
 ]
 
 app = FastAPI(title="Foundry", version="0.1.0")
+# Brand images (logo). Served from the repository, so Docker includes them through `COPY . .`.
+app.mount("/static", StaticFiles(directory=ROOT / "static", check_dir=False), name="static")
 e = ui.esc
 
 

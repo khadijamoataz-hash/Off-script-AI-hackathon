@@ -61,7 +61,8 @@ code{font-family:var(--mono);font-size:.84em;background:var(--navy-50);color:var
 .topbar .wrap{display:flex;align-items:center;gap:16px;height:64px}
 .brand{display:flex;align-items:center;gap:10px;color:var(--navy);font-weight:800;letter-spacing:.18em;font-size:15px;margin-right:auto}
 .brand:hover{text-decoration:none}
-.logo-slot{width:30px;height:30px;flex:none;border-radius:8px}
+.brand-logo{display:block;height:40px;width:auto;max-width:none}
+@media(max-width:560px){.brand-logo{height:34px}}
 .nav{display:flex;align-items:center;gap:2px}
 .nav a{color:var(--ink-2);font-size:14px;font-weight:550;padding:8px 12px;border-radius:9px;white-space:nowrap}
 .nav a:hover{background:var(--purple-50);color:var(--purple);text-decoration:none}
@@ -354,8 +355,7 @@ def page(title: str, body: str, *, refresh: int | None = None, model: str = "", 
         f'<body class="{"live" if refresh else ""}">'
         '<header class="topbar"><div class="wrap">'
         '<a class="brand" href="/">'
-        "<!-- Logo slot: the brand logo goes here (30 x 30). -->"
-        '<span class="logo-slot" aria-hidden="true"></span>FOUNDRY</a>'
+        '<img class="brand-logo" src="/static/brand/logo.png" alt="Foundry" width="173" height="40"></a>'
         f'<nav class="nav">{chip}<a href="/#projects">Projects</a><a href="/status">System status</a>'
         '<a class="cta" href="/#new">New idea</a></nav>'
         "</div></header>"
