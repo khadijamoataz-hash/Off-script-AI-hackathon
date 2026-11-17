@@ -82,7 +82,9 @@ Measured on the committed demo run (`outputs/`, `decision_log.json`): 10 agent m
 
 ## How the project stays alive after the hackathon
 
-- **Maintainers:** the Foundry team maintains the repository under Apache-2.0 and reviews contributions.
-- **Roadmap:** agents for the phases that are still `STUBBED` (Build, Operate), a stronger guardrail model and wider evals, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
-- **Community:** contributed agents, prompts (`prompts/`) and guardrail evals (`evals/`). The guardrail evals are public so anyone can check the safety rules.
-- **Funding (`ASSUMPTION`, not yet validated):** the core stays free and self-hosted. Possible income is a hosted version for founders who do not want to run a model, and licences and support for incubators and university venture programmes. Safety rules and core features are never paywalled.
+- **Maintainers:** the Foundry team maintains the repository under Apache-2.0. Every pull request needs a passing test run (GitHub Actions, no model or paid service needed) and a review from a maintainer; changes to guardrails or approval code also need a new or updated eval case.
+- **Cost to keep running:** about $0.00 per run. The model runs locally through Ollama and search runs in a local SearXNG container, so there are no servers, API keys or subscriptions to pay for.
+- **How to contribute:** add an agent (`agents/` with its prompt in `prompts/` and tests), add a guardrail eval case (`evals/`), or write a playbook for a product type. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
+- **Roadmap:** the `STUBBED` phases (Build, Operate) first, then a stronger guardrail model, wider evals and community playbooks. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Funding (`ASSUMPTION`, not yet validated):** a hosted version for founders who cannot run a model; licences and support for incubators and university venture programmes; GitHub Sponsors or Open Collective for maintenance.
+- **Never paywalled:** the core features, the guardrails and the founder approval steps stay free and open in every version.
