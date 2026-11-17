@@ -2,7 +2,9 @@
 
 An open-source team of AI agents that takes a founder's brief toward a validated, sellable digital product, and recommends stopping when the evidence is weak. The founder approves every step. Licensed Apache-2.0.
 
-In the committed demo run, the critic recommended REPEAT three times, the founder fixed a demand target of 55 sign-ups before the test, real demand came in at 0, and the system recommended **STOP**. Step-by-step walkthrough with links to every output: [docs/demo_run.md](docs/demo_run.md).
+In the committed demo run, the critic recommended REPEAT three times, the founder fixed a demand target of 55 sign-ups before the test, and the Validate gate recommended **STOP** when 0 sign-ups were recorded. That run demonstrates the gate's mechanics, not a demand experiment: the landing page was never published, so the 0 does not show a lack of demand. Step-by-step walkthrough with links to every output: [docs/demo_run.md](docs/demo_run.md).
+
+A second committed run shows the system itself judging an idea weak: for a paid water-reminder app with a $0 budget and no technical skills, research fetched 5 pages and sourced 4 of 5 claims, the critic recommended **STOP** because the founder could not build or test it, and the founder stopped: [outputs/PRJ-CB2E6766/phase1_gate_decision.md](outputs/PRJ-CB2E6766/phase1_gate_decision.md), with the research in [outputs/PRJ-CB2E6766/phase1_step1_opportunities.md](outputs/PRJ-CB2E6766/phase1_step1_opportunities.md).
 
 What you can check in this repository:
 
