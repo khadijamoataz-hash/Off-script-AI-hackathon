@@ -17,7 +17,43 @@ from guardrails import (
 from evals.redteam import REDTEAM_CASES, format_redteam_markdown_table, run_redteam_suite
 
 
-@pytest.mark.parametrize("case", REDTEAM_CASES, ids=[c.case_id for c in REDTEAM_CASES])
+RULE_BLOCK_CASES = [c for c in REDTEAM_CASES if c.expect == "block" and not c.needs_model]
+ALLOW_CASES = [c for c in REDTEAM_CASES if c.expect == "allow"]
+
+
+@pytest.mark.parametrize("case", ALLOW_CASES, ids=[c.case_id for c in ALLOW_CASES])
+def test_ordinary_text_is_not_blocked_by_the_rules(case) -> None:
+    engine = PolicyEngine()
+    if case.surface == "tool_call":
+        decision = engine.evaluate_tool_call(case.tool_name, {"payload": case.prompt_or_payload})
+    else:
+        decision = engine.evaluate_text(case.prompt_or_payload, context=PolicyContext(surface=case.surface))
+    assert decision.allowed is True
+
+
+def test_secrets_are_refused_and_never_written_to_the_log(tmp_path: Path) -> None:
+    from guardrails import redact_secrets
+
+    log = DecisionLog(tmp_path / "decision_log.json")
+    engine = PolicyEngine(decision_log=log)
+    for text in ("my key is sk_live_abc12345", "card 4242 4242 4242 4242", "password: hunter22"):
+        decision = engine.screen_request(text)
+        assert decision.allowed is False
+        assert decision.category == PolicyCategory.CREDENTIAL_OR_CARD_STORAGE
+    raw = (tmp_path / "decision_log.json").read_text()
+    assert "sk_live" not in raw and "4242" not in raw and "hunter22" not in raw
+    assert "sk_live" not in redact_secrets("keep sk_live_abc12345 safe")
+    assert engine.screen_request("We sold 4000 units in 2024 and 12 in 2025").allowed
+
+
+def test_any_classifier_category_other_than_clean_blocks() -> None:
+    verdict = ClassifierVerdict(reason="looks like a review", category=PolicyCategory.FAKE_SOCIAL_PROOF, safe=True)
+    engine = PolicyEngine(classifier=lambda text, ctx: verdict)
+    assert engine.evaluate_text("Some reworded request").allowed is False
+    assert engine.evaluate_text("Some reworded request", use_classifier=False).allowed is True
+
+
+@pytest.mark.parametrize("case", RULE_BLOCK_CASES, ids=[c.case_id for c in RULE_BLOCK_CASES])
 def test_canonical_redteam_prompt_is_blocked_logged_and_prompts_founder(
     tmp_path: Path, case
 ) -> None:
@@ -52,7 +88,7 @@ def test_canonical_redteam_prompt_is_blocked_logged_and_prompts_founder(
 def test_full_redteam_suite_runner_and_markdown_table(tmp_path: Path) -> None:
     log = DecisionLog(tmp_path / "decision_log.json")
     results = run_redteam_suite(decision_log=log)
-    assert len(results) == len(REDTEAM_CASES)
+    assert len(results) == len([c for c in REDTEAM_CASES if not c.needs_model])
     assert all(r.passed for r in results)
     assert log.verify().valid is True
 
@@ -107,4 +143,7 @@ def test_policy_engine_allows_legitimate_evidence_backed_founder_drafts(
     assert len(log.read_all()) == 0
 
     with pytest.raises(PolicyViolationError):
-        engine.enforce_text("We guarantee you will make $10k profit in 7 days!")
+        engine.enforce_text(
+            "We guarantee you will make $10k profit in 7 days!",
+            context=PolicyContext(surface="agent_output"),
+        )

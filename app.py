@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from agents.intake import FounderBrief
 from approval import OutboxError
-from guardrails import PolicyViolationError
+from guardrails import PolicyContext, PolicyViolationError
 from orchestrator import Orchestrator, OrchestratorError
 from tools import search_status
 from workflow import STEP_CHOICES, Workflow, WorkflowError, outputs_dir
@@ -43,8 +43,8 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
     ("Decision log with hash chain", "Working", "decision_log.py"),
     ("Approval queue with signed single-use tokens", "Working", "approval.py"),
     ("Six-phase state machine and gates", "Working", "orchestrator.py, gates.py"),
-    ("Guardrails: keyword rules and tool allowlist", "Working", "guardrails.py"),
-    ("Guardrails: model classifier on every output", "STUBBED", "built, not switched on by default"),
+    ("Guardrails: keyword backstop, secrets detector, tool allowlist", "Working", "guardrails.py"),
+    ("Guardrails: model classifier on founder requests and outbound drafts, fails closed", "Working", "guardrails.py, llm.py"),
     ("Local model adapter (Ollama)", "Working", "llm.py"),
     ("Founder brief intake, with excluded product types refused", "Working", "agents/intake.py, app.py"),
     ("Web search (self-hosted SearXNG) and page fetch with quote check", "Working", "tools.py"),
@@ -90,6 +90,7 @@ def collect_status() -> dict[str, Any]:
                     "case_id": r.case_id,
                     "name": r.name,
                     "prompt": r.prompt_or_payload,
+                    "expect": r.expect,
                     "blocked": r.blocked,
                     "logged": r.logged,
                     "founder_prompted": r.founder_prompted,
@@ -146,7 +147,7 @@ def status_page() -> str:
     rt = st["redteam"]
     rt_rows = "".join(
         f"<tr><td><code>{e(c['case_id'])}</code></td><td>{e(c['name'])}</td><td>{e(c['prompt'])}</td>"
-        f"<td>{_badge(c['blocked'], 'yes', 'no')}</td><td>{_badge(c['logged'], 'yes', 'no')}</td>"
+        f"<td>{e(c['expect'])}</td><td>{'yes' if c['blocked'] else 'no'}</td>"
         f"<td><code>{e(c['rule_id'] or '')}</code></td><td>{_badge(c['passed'], 'PASS', 'FAIL')}</td></tr>"
         for c in rt["cases"]
     )
@@ -177,8 +178,10 @@ but not built; parts marked <strong>MOCKED</strong> are simulated.</p>
 Ollama at <code>{e(str(llm['ollama_url']))}</code></p>
 <h2>Decision log (required keys and hash chain verified now)</h2>
 <table><tr><th>Log</th><th>Status</th><th>Entries</th><th>Head hash</th><th>Path</th></tr>{log_rows}</table>
-<h2>Guardrail evals (run now): {rt['passed']}/{rt['total']} passed</h2>
-<table><tr><th>Case</th><th>Challenge</th><th>Prompt</th><th>Blocked</th><th>Logged</th><th>Rule</th><th>Result</th></tr>{rt_rows}</table>
+<h2>Guardrail evals, rules only (run now): {rt['passed']}/{rt['total']} passed</h2>
+<p>These run without the model: the keyword backstop, secrets detector and tool allowlist. Rewordings and
+other languages are checked by the model classifier; see <code>evals/results.md</code> for the full run.</p>
+<table><tr><th>Case</th><th>What it tries</th><th>Text</th><th>Expected</th><th>Blocked</th><th>Rule</th><th>Result</th></tr>{rt_rows}</table>
 <h2>What works and what is mocked</h2>
 <table><tr><th>Part</th><th>Status</th><th>Where</th></tr>{caps}</table>
 </body></html>"""
@@ -353,7 +356,12 @@ def create_project(
         brief = _brief_from_form(idea, skills, budget, time_available, target_market, values, source_urls)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors(include_url=False, include_context=False)) from exc
-    project = get_workflow().start_project(brief)
+    try:
+        project = get_workflow().start_project(brief)
+    except WorkflowError as exc:
+        return HTMLResponse(_page("Brief refused", (
+            f'<div class="box warn"><h2>This brief was not saved</h2><p>{html.escape(str(exc))}</p></div>'
+            '<p><a href="/">Back</a></p>')), status_code=400)
     _start_step(project.id, "step1")
     return RedirectResponse(f"/projects/{project.id}", status_code=303)
 
@@ -398,6 +406,8 @@ def project_page(project_id: str, unclear: str = "") -> str:
     if state.get("error"):
         parts.append(f'<div class="box warn"><strong>The step failed.</strong> {e(state["error"])}<br>'
                      "Nothing was made up to cover for it. You can run the step again.</div>")
+    if unclear and state.get("reply_refusal"):
+        parts.append(f'<div class="box warn">{e(state["reply_refusal"])}</div>')
     if unclear:
         parts.append(f'<div class="box warn">Your reply "{e(unclear)}" is not a clear choice, so nothing was done. '
                      "Please choose one of: continue, repeat, go back, stop.</div>")
@@ -429,6 +439,10 @@ def project_page(project_id: str, unclear: str = "") -> str:
         parts.append(f'<form method="post" action="/projects/{project_id}/run/{step}">'
                      f'<button class="primary" type="submit">{label}</button></form>')
     elif awaiting == "revise_brief":
+        if state.get("refusal"):
+            parts.append(f'<div class="box warn"><h2>Foundry will not do this</h2><p>{e(state["refusal"])}</p>'
+                         "<p>The refusal is recorded in the decision log. You can change the brief below, or stop.</p>"
+                         f"{_choice_buttons(project_id, ('stop',))}</div>")
         parts.append("<h2>Revise the brief</h2>" + _brief_form(project.brief, f"/projects/{project_id}/brief"))
     elif project.status.value == "stopped":
         parts.append('<div class="box">This project was stopped by the founder.</div>'
@@ -521,6 +535,13 @@ def decide(project_id: str, choice: str = Form(""), reply: str = Form("")):
     """The only way a gate is passed: a founder action in this UI."""
     wf = get_workflow()
     selected = choice if choice in STEP_CHOICES else parse_reply(reply)
+    if selected is None and reply.strip():
+        # A typed message is never an approval. If it asks for something forbidden, say so.
+        check = wf.engine.evaluate_text(
+            reply, PolicyContext(project_id=project_id, surface="founder_request"), use_classifier=False
+        )
+        if not check.allowed:
+            wf._set_state(project_id, reply_refusal=check.founder_prompt)
     if selected is None:
         return RedirectResponse(f"/projects/{project_id}?unclear={quote(reply[:60])}", status_code=303)
     try:

@@ -118,12 +118,12 @@ reconciliation: orders == payments - fees == payouts, mismatches listed for the 
 
 ## Data flow
 
-1. The founder submits a brief. The orchestrator creates a project and logs it.
-2. An agent runs a step: it calls the local model and tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source is stored as `ASSUMPTION`.
-3. The agent returns a typed result. Guardrails check it: tool allowlist, typed outputs, model classifier (fails closed), keyword rules. A block is logged and shown to the founder.
+1. The founder submits a brief. A brief containing a password, key or card number is refused and not stored. Otherwise the orchestrator creates a project and logs it.
+2. Before any agent runs, guardrails read the brief as a founder request: keyword backstop, then the model classifier (two differently framed checks; any failure or doubt blocks). A refused request is logged and shown to the founder with the reason.
+3. An agent runs a step: it calls the local model and allowlisted tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source that contains its quote is stored as `ASSUMPTION`. The agent returns a typed result.
 4. The step output is written to `outputs/` and the action is appended to `decision_log.json` with `agent`, `action`, `sources`, `model`, `cost`, `approved_by` and a hash chain (`prev_hash`, `entry_hash`).
 5. The gate is evaluated and a recommendation is shown. The founder decides; the decision is logged.
-6. Outbound items (post, email, listing, deploy, support reply, sign) enter the approval queue. Approval creates a signed, single-use token bound to the content hash; any edit cancels it. The executor verifies the token and writes copy-ready text to `outputs/`. `spend` has no executor.
+6. Outbound items (post, email, listing, deploy, support reply, sign) pass the guardrails as agent output (keyword backstop and model classifier) and then enter the approval queue; a blocked draft is logged and never queued. Approval creates a signed, single-use token bound to the content hash; any edit cancels it. The executor verifies the token and writes copy-ready text to `outputs/`. `spend` has no executor.
 7. `scripts/verify_decision_log.py` checks the required keys and the hash chain.
 
 Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decision_log.json` and `outputs/` as plain text.
@@ -142,8 +142,8 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 | Delivery (`delivery.py`) | MOCKED |
 | Decision log (`decision_log.py`) | Working |
 | Approval queue and tokens (`approval.py`) | Working |
-| Guardrails: keyword rules, tool allowlist (`guardrails.py`) | Working; misses rewordings and non-English prompts; checks approval-queue items only |
-| Guardrails: model classifier | STUBBED (built, not on by default) |
+| Guardrails: secrets detector, keyword backstop, tool allowlist (`guardrails.py`) | Working; keyword rules are English only |
+| Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on the founder brief and on drafts entering the approval queue; a small local model, so not perfect (see `evals/results.md`) |
 | Model adapter (`llm.py`) | Working |
 | Phase 2 Validate, Phase 3 Build, Phase 4 Commercial setup, Phase 6 Operate agents | STUBBED |
 | Sandboxed test runner, CLI | STUBBED |
@@ -155,6 +155,6 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 1. Brief intake and Discover agents with fetched sources; step gates in the UI.
 2. Approval screen; Launch drafts through the approval queue; mocked delivery.
 3. Validate agent (Lean Canvas, landing page, pre-set target).
-4. Guardrails: model classifier on by default, typed outputs, wider evals including Arabic.
+4. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
 5. Build, Commercial setup and Operate agents.
 6. After the hackathon: self-hosted search, community playbooks per product type, a hosted option for founders who cannot run a model.

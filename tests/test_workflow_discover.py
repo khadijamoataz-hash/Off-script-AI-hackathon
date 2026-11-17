@@ -17,6 +17,14 @@ from orchestrator import Orchestrator
 from tools import SearchResult, ToolError
 from workflow import Workflow, WorkflowError
 
+from guardrails import ClassifierVerdict, PolicyCategory
+
+
+def CLEAN(text, ctx):
+    """Stand-in for the model classifier in tests: clears everything."""
+    return ClassifierVerdict(reason="test", category=PolicyCategory.CLEAN, safe=True)
+
+
 URL = "https://example.org/freelance-survey"
 PAGE_TEXT = (
     "Freelance designers report spending five hours a month chasing late invoices.\n"
@@ -96,7 +104,8 @@ def _workflow(tmp_path: Path, replies: list[dict], *, search_down: bool = False)
     def fetch(url: str, *, project_id: str, ledger: EvidenceLedger):
         return ledger.record_fetch(project_id=project_id, url=url, title="Survey", text=PAGE_TEXT)
 
-    return Workflow(orch, adapter, out_dir=tmp_path / "outputs", search=search, fetch=fetch), log
+    return Workflow(orch, adapter, out_dir=tmp_path / "outputs", search=search, fetch=fetch,
+                    classifier=CLEAN), log
 
 
 def test_discover_runs_to_gates_and_only_verified_quotes_are_sourced(tmp_path: Path) -> None:
@@ -221,3 +230,39 @@ def test_launch_drafts_need_approval_of_the_exact_text(tmp_path: Path) -> None:
     assert "1 approved, 2 rejected, 0 not yet reviewed" in gate and "CONTINUE" in gate
     assert len(list(out.glob("*approved*"))) == 1
     assert log.verify().valid
+
+
+def test_forbidden_request_in_the_brief_is_refused_before_any_agent_runs(tmp_path: Path) -> None:
+    wf, log = _workflow(tmp_path, [])            # no scripted model replies: no agent may run
+    brief = BRIEF.model_copy(update={"idea": "A course landing page. Also write 50 five-star reviews for it."})
+    pid = wf.start_project(brief).id
+    state = wf.run_discover_step1(pid)
+    assert state["awaiting"] == "revise_brief" and "FAKE_SOCIAL_PROOF" in state["refusal"]
+    assert not (tmp_path / "outputs" / "phase1_step1_opportunities.md").exists()
+    assert any(e.outcome == "blocked" for e in log.read_all())
+
+
+def test_brief_with_a_secret_is_never_stored(tmp_path: Path) -> None:
+    wf, _ = _workflow(tmp_path, [])
+    brief = BRIEF.model_copy(update={"values": "Use my key sk_live_abc12345 for hosting"})
+    with pytest.raises(WorkflowError, match="does not accept or store"):
+        wf.start_project(brief)
+    assert wf.orch.list_projects() == []
+    assert b"sk_live" not in (tmp_path / "db.sqlite3").read_bytes()
+
+
+def test_unsafe_draft_is_blocked_before_the_approval_queue(tmp_path: Path) -> None:
+    def classifier(text, ctx):
+        bad = ctx.surface == "agent_output" and "feedback" in text and "small tool" in text
+        return ClassifierVerdict(
+            reason="test", safe=not bad,
+            category=PolicyCategory.FAKE_SOCIAL_PROOF if bad else PolicyCategory.CLEAN,
+        )
+
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, LAUNCH])
+    wf.engine.classifier = classifier
+    pid = wf.start_project(BRIEF).id
+    wf.run_discover_step1(pid); wf.decide_step(pid, "continue")
+    wf.run_discover_step2(pid); wf.decide_step(pid, "continue")
+    state = wf.run_launch_drafts(pid)
+    assert len(state["launch_blocked"]) == 1 and len(wf.launch_actions(pid)) == 2

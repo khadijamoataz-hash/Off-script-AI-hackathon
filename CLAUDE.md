@@ -254,5 +254,5 @@ Build order:
 | `docker compose up`: app, Ollama with model pull, SearXNG | Working |
 | Brief intake, Discover (researcher, critic, interview script), step gates in the browser | Working |
 | Launch drafts into the approval queue, approval screen, `delivery.py` (`MOCKED`) | Working, from the Discover option only |
-| Keyword guardrails, tool allowlist | Working, known to miss rewordings |
-| Validate, Build, Commercial setup, Operate agents; guardrails rebuild; committed demo run | Not built |
+| Guardrails: secrets detector, keyword backstop, tool allowlist, model classifier failing closed; `evals/` with block and allow cases | Working |
+| Validate, Build, Commercial setup, Operate agents; committed demo run | Not built |

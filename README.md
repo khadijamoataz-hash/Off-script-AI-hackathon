@@ -17,7 +17,8 @@ Other commands:
 ```bash
 python -m pytest -q                       # smoke tests
 python scripts/verify_decision_log.py     # check decision_log.json keys and hash chain
-python -m evals.run                       # guardrail evals, pass/fail table
+python -m evals.run                       # guardrail evals, rules only (no model needed)
+python -m evals.run --model               # all guardrail evals through the local model
 ```
 
 ## What works and what is mocked
@@ -38,17 +39,17 @@ python -m evals.run                       # guardrail evals, pass/fail table
 | Phase 6 Operate and learn | **STUBBED** | not built |
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
-| Guardrails: keyword rules and tool allowlist | **Working** | `guardrails.py` |
-| Guardrails: model classifier on every output | **STUBBED** | built in `llm.py`, not switched on by default |
+| Guardrails: secrets detector, keyword backstop, tool allowlist (no model needed) | **Working** | `guardrails.py` |
+| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working** | `guardrails.py`, `llm.py`, results in `evals/results.md` |
 | Local model adapter (Ollama) | **Working** | `llm.py` |
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
 
-Known limits: the keyword guardrails miss rewordings and non-English prompts until the model classifier is on by default, and they currently check only items entering the approval queue. Because Phases 2 to 4 are stubbed, the state machine's recorded phase stops at Validate; Launch drafting runs from the approved Discover option.
+Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phases 2 to 4 are stubbed, the state machine's recorded phase stops at Validate; Launch drafting runs from the approved Discover option.
 
 ## Architecture
 
-A state machine moves a project through six phases: Discover, Validate, Build, Commercial setup, Launch, Operate and learn. Every step ends with a gate: founder approval, an evidence target set in advance, or passing tests. Agents can only propose actions; anything that would be published, sent, spent or signed waits in an approval queue until the founder approves the exact content. Every claim is stored with a fetched source or labelled `ASSUMPTION`, and every agent action is written to a hash-chained `decision_log.json`. Agent outputs are typed, so content such as testimonials, prices or countdowns has no field to be written into; guardrail rules check every item entering the approval queue. Full design: [ARCHITECTURE.md](ARCHITECTURE.md).
+A state machine moves a project through six phases: Discover, Validate, Build, Commercial setup, Launch, Operate and learn. Every step ends with a gate: founder approval, an evidence target set in advance, or passing tests. Agents can only propose actions; anything that would be published, sent, spent or signed waits in an approval queue until the founder approves the exact content. Every claim is stored with a fetched source or labelled `ASSUMPTION`, and every agent action is written to a hash-chained `decision_log.json`. Agent outputs are typed, so content such as testimonials, prices or countdowns has no field to be written into. A secrets detector, keyword rules and a model classifier that fails closed check the founder's brief before any agent runs and every draft before it enters the approval queue. Full design: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Models and free resources
 

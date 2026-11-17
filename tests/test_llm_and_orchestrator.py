@@ -80,7 +80,9 @@ def test_llm_safety_classifier_integrates_with_policy_engine(tmp_path: Path) -> 
     log = DecisionLog(tmp_path / "decision_log.json")
     # Model classifier flags a subtle income promise that avoided exact keyword patterns
     scripted_unsafe = [
-        '{"safe": false, "confident": true, "category": "INCOME_GUARANTEE", "reason": "Implied certainty of passive wealth"}'
+        '{"reason": "Says every buyer retires early", "invent_proof": false, "promise_results": true, '
+        '"pressure_tactics": false, "act_as_someone": false, "touch_money": false, '
+        '"account_or_terms": false, "keep_secret": false, "skip_approval": false, "overall": "INCOME_GUARANTEE"}'
     ]
     adapter = LLMAdapter(
         config=LLMConfig(provider="offline"),
@@ -91,7 +93,7 @@ def test_llm_safety_classifier_integrates_with_policy_engine(tmp_path: Path) -> 
         classifier=build_llm_safety_classifier(adapter),
     )
 
-    decision = engine.evaluate_text("Every single student who buys this effortlessly retires by May.")
+    decision = engine.screen_request("Every single student who buys this effortlessly retires by May.")
     assert decision.allowed is False
     assert decision.category == PolicyCategory.INCOME_GUARANTEE
     assert log.verify().valid is True

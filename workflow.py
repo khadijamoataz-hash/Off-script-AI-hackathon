@@ -30,9 +30,16 @@ from agents.researcher import (
 from approval import ActionStatus, OutboxError, ProposedAction
 from delivery import MockDeliveryService, run_mock_delivery_test
 from evidence import Claim, ClaimType, FetchedPage
-from guardrails import PolicyViolationError
+from guardrails import (
+    ClassifierCallable,
+    PolicyCategory,
+    PolicyContext,
+    PolicyDecision,
+    PolicyEngine,
+    PolicyViolationError,
+)
 from gates import GateOutcome, PhaseName, ProjectStatus
-from llm import LLMAdapter
+from llm import LLMAdapter, build_llm_safety_classifier
 from orchestrator import Orchestrator, ProjectRecord
 from tools import SearchResult, ToolError, fetch_url, web_search
 
@@ -102,12 +109,20 @@ class Workflow:
         out_dir: Path | None = None,
         search: SearchFn | None = None,
         fetch: FetchFn | None = None,
+        classifier: ClassifierCallable | None = None,
     ) -> None:
         self.orch = orchestrator
         self.ledger = orchestrator.evidence_ledger
         self.log = orchestrator.decision_log
         self.adapter = adapter or LLMAdapter()
         self.out_dir = out_dir or outputs_dir()
+        # One guardrail engine for everything. The model classifier is always on and fails
+        # closed; it reads founder requests and every draft entering the approval queue.
+        self.engine = PolicyEngine(
+            decision_log=self.log,
+            classifier=classifier or build_llm_safety_classifier(self.adapter),
+        )
+        self.orch.outbox.policy_engine = self.engine
         # Approved exports go to the same folder as the other outputs.
         self.orch.outbox.export_dir = self.out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +164,25 @@ class Workflow:
         usage["model"] = result.model
         self._set_state(project_id, usage=usage)
 
+    def _scrub(self, project_id: str, phase: str, text: str) -> str:
+        """Keyword check on an agent-written document, line by line. A line that breaks a
+        rule is removed and the removal is logged; the rest of the document is kept."""
+        quiet = PolicyEngine()
+        kept: list[str] = []
+        for line in text.splitlines():
+            context = PolicyContext(project_id=project_id, phase=phase, surface="agent_output")
+            if line.strip() and not quiet.evaluate_text(line, context, use_classifier=False).allowed:
+                decision = self.engine.evaluate_text(line, context, use_classifier=False)
+                kept.append(f"[Removed by guardrails: {decision.category.value}]")
+            else:
+                kept.append(line)
+        return "\n".join(kept)
+
+    def _tool_allowed(self, project_id: str, tool: str, args: dict[str, Any]) -> bool:
+        return self.engine.evaluate_tool_call(
+            tool, args, project_id=project_id, phase=PhaseName.DISCOVER.value
+        ).allowed
+
     def _write(self, name: str, content: str) -> str:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         path = self.out_dir / name
@@ -160,7 +194,17 @@ class Workflow:
 
     # ------------------------------------------------------------------ intake
 
+    def check_brief_for_secrets(self, brief: FounderBrief) -> PolicyDecision:
+        """Refuse a brief that contains a password, key or card number before it is stored."""
+        return self.engine.evaluate_text(
+            brief.as_prompt(), PolicyContext(surface="founder_request", phase="discover"),
+            use_classifier=False,
+        )
+
     def start_project(self, brief: FounderBrief, *, evidence_target: int = 10) -> ProjectRecord:
+        check = self.check_brief_for_secrets(brief)
+        if check.category == PolicyCategory.CREDENTIAL_OR_CARD_STORAGE:
+            raise WorkflowError(check.founder_prompt or check.reason)
         name = " ".join(brief.idea.split()[:8])
         project = self.orch.create_project(
             name=name,
@@ -182,7 +226,16 @@ class Workflow:
         brief = self._brief(project)
         started = time.monotonic()
         phase = PhaseName.DISCOVER.value
-        self._set_state(project_id, stage="screening the brief", awaiting=None, error=None)
+        self._set_state(
+            project_id, stage="screening the brief", awaiting=None, error=None, refusal=None
+        )
+
+        request = self.engine.screen_request(brief.as_prompt(), project_id=project_id, phase=phase)
+        if not request.allowed:
+            return self._set_state(
+                project_id, stage="request refused", awaiting="revise_brief",
+                refusal=f"{request.founder_prompt} (Rule: {request.category.value}.)",
+            )
 
         screen = screen_brief(self.adapter, brief)
         self._add_usage(project_id, screen)
@@ -234,10 +287,10 @@ class Workflow:
         recommendation, reason = discover_recommendation(critic.output, len(facts))
         path = self._write(
             "phase1_step1_opportunities.md",
-            render_opportunities(
+            self._scrub(project_id, phase, render_opportunities(
                 project, research.output, critic.output, claims, search_note,
                 recommendation, reason,
-            ),
+            )),
         )
         self.orch.save_phase_artifact(
             project_id, PhaseName.DISCOVER,
@@ -290,6 +343,9 @@ class Workflow:
         urls: list[str] = list(brief.source_urls)
         notes: list[str] = []
         for query in queries[:3]:
+            if not self._tool_allowed(project_id, "web_search", {"query": query}):
+                notes.append("A search query was blocked by guardrails.")
+                continue
             try:
                 results = self.search(query)
             except ToolError as exc:
@@ -310,6 +366,8 @@ class Workflow:
                     urls.append(result.url)
 
         def _fetch(url: str) -> FetchedPage | str:
+            if not self._tool_allowed(project_id, "fetch_url", {"url": url}):
+                return "A page fetch was blocked by guardrails."
             try:
                 return self.fetch(url, project_id=project_id, ledger=self.ledger)
             except ToolError as exc:
@@ -386,7 +444,8 @@ class Workflow:
         files = [
             self._write(
                 "phase1_step2_interview_script.md",
-                render_interview_script(project, option, script.output),
+                self._scrub(project_id, PhaseName.DISCOVER.value,
+                            render_interview_script(project, option, script.output)),
             ),
             self._write(
                 "phase1_gate_decision.md",
@@ -412,6 +471,9 @@ class Workflow:
         project = self.orch._require_project(project_id)
         state = self.get_state(project_id)
         awaiting = state.get("awaiting")
+        if awaiting == "revise_brief" and choice == "stop":
+            self.orch.decide_gate(project_id, GateOutcome.STOP, founder_approved=True, rationale=note)
+            return self._set_state(project_id, stage="stopped by founder", awaiting=None)
         if awaiting not in {"step1_gate", "phase_gate", "excluded_gate"}:
             raise WorkflowError("No gate is waiting for a decision.")
         if awaiting == "excluded_gate" and choice != "stop":
@@ -461,6 +523,9 @@ class Workflow:
         state = self.get_state(project_id)
         if state.get("awaiting") != "revise_brief":
             raise WorkflowError("The brief can only be revised after choosing 'go back'.")
+        check = self.check_brief_for_secrets(brief)
+        if check.category == PolicyCategory.CREDENTIAL_OR_CARD_STORAGE:
+            raise WorkflowError(check.founder_prompt or check.reason)
         with self._connect() as conn:
             conn.execute(
                 "UPDATE projects SET brief_json = ?, idea_summary = ? WHERE id = ?",

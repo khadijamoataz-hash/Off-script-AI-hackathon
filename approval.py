@@ -261,7 +261,7 @@ class OutboxService:
                 context=PolicyContext(
                     project_id=project_id,
                     phase=phase,
-                    surface="agent_output",
+                    surface="tool_call",
                 ),
             )
             raise OutboxError("Spend actions are prohibited in Foundry.")
