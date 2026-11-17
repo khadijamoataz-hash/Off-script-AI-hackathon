@@ -4,7 +4,7 @@ PORT ?= 8000
 # Load .env for local runs when it exists (docker compose reads it on its own).
 ENV_FILE := $(if $(wildcard .env),--env-file .env,)
 
-.PHONY: setup up local-up test evals verify-log
+.PHONY: setup up local-up test evals verify-log delivery-test
 
 setup:
 	python3 -m venv .venv
@@ -25,3 +25,6 @@ evals:
 
 verify-log:
 	$(PYTHON) scripts/verify_decision_log.py decision_log.json
+
+delivery-test:
+	$(PYTHON) scripts/run_delivery_test.py

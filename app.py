@@ -54,7 +54,8 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
     ("Web search (self-hosted SearXNG) and page fetch with quote check", "Working", "tools.py"),
     ("Phase 1 Discover: opportunities, critic review, interview script", "Working", "agents/researcher.py, agents/critic.py, workflow.py"),
     ("Step gates in the browser: continue, repeat, go back, stop", "Working", "app.py, workflow.py"),
-    ("Phase 2 Validate, 3 Build, 4 Commercial setup, 6 Operate", "STUBBED", "agents not built"),
+    ("Phase 2 Validate: Lean Canvas, landing page, demand target fixed in advance, STOP on weak demand", "Working", "agents/strategist.py, workflow.py"),
+    ("Phase 3 Build, 4 Commercial setup, 6 Operate", "STUBBED", "agents not built"),
     ("Phase 5 Launch: store page and launch post drafts into the approval queue", "Working", "agents/launcher.py, workflow.py"),
     ("Approving or rejecting the exact text in the browser, export as copy-ready text", "Working", "app.py, approval.py"),
     ("Delivery to buyers", "MOCKED", "delivery.py: simulated order, idempotent delivery, refund revokes access"),
@@ -278,12 +279,16 @@ def _start_step(project_id: str, step: str) -> None:
                 wf.run_discover_step1(project_id)
             elif step == "step2":
                 wf.run_discover_step2(project_id)
+            elif step == "validate":
+                wf.run_validate_step1(project_id)
             else:
                 wf.run_launch_drafts(project_id)
         except Exception as exc:  # noqa: BLE001 - shown to the founder with a retry button
             failure = f"{type(exc).__name__}: {exc}"
             if step == "launch":
                 wf._set_state(project_id, launch_stage="failed", error=failure)
+            elif step == "validate":
+                wf._set_state(project_id, validate_stage="ready", error=failure)
             else:
                 wf._set_state(
                     project_id, stage="failed", error=failure,
@@ -295,6 +300,8 @@ def _start_step(project_id: str, step: str) -> None:
 
     if step == "launch":
         wf._set_state(project_id, launch_stage="starting", error=None)
+    elif step == "validate":
+        wf._set_state(project_id, validate_stage="drafting", error=None)
     else:
         wf._set_state(project_id, stage="starting", awaiting=None, error=None)
     threading.Thread(target=_run, daemon=True).start()
@@ -383,8 +390,9 @@ def index() -> str:
         f'<section class="how" aria-label="How Foundry works">{how}</section>'
         f"{projects}"
         '<div class="notice" style="margin-top:40px"><span class="icon orange">i</span><p><strong>What this prototype does.</strong> '
-        "Working: Discover (research, critic review, interview script) and Launch drafts with your approval. "
-        "<strong>STUBBED</strong> (designed, not built): Validate, Build, Commercial setup, Operate. "
+        "Working: Discover (research, critic review, interview script), Validate (Lean Canvas, landing page, "
+        "demand test against a target you fix in advance) and Launch drafts with your approval. "
+        "<strong>STUBBED</strong> (designed, not built): Build, Commercial setup, Operate. "
         "Delivery is <strong>MOCKED</strong>. There are no payments.</p></div>"
     )
     return _page("Challenge your idea", body, model_ready=bool(llm["ready"]))
@@ -407,8 +415,12 @@ def _stage_label(state: dict[str, Any], status: str) -> str:
         return labels[awaiting]
     if str(state.get("launch_stage", "")).startswith("gate decided"):
         return "Launch reviewed"
+    if state.get("validate_passed"):
+        return "Validate passed; launch drafts"
+    if state.get("validate_stage") in ("awaiting_results", "results_recorded"):
+        return "Waiting for your demand test results"
     if state.get("discover_approved"):
-        return "Discover approved; launch drafts"
+        return "Discover approved; ready to validate"
     return str(state.get("stage", "")) or "New"
 
 
@@ -511,13 +523,15 @@ def _stepper(state: dict[str, Any], status: str) -> str:
     awaiting = state.get("awaiting")
     approved = bool(state.get("discover_approved"))
     launch_done = str(state.get("launch_stage", "")).startswith("gate decided")
+    passed = bool(state.get("validate_passed"))
     step1_done = approved or awaiting in {"run_step2", "phase_gate"} or state.get("stage") == "drafting the interview script"
     items = [
         ("Brief", "done"),
         ("1 Discover: opportunities", "done" if step1_done else "now"),
         ("1 Discover: interview script", "done" if approved else ("now" if step1_done else "")),
-        ("2 Validate", "stub"), ("3 Build", "stub"), ("4 Commercial setup", "stub"),
-        ("5 Launch: drafts and approval", "done" if launch_done else ("now" if approved else "")),
+        ("2 Validate: demand test", "done" if passed else ("now" if approved else "")),
+        ("3 Build", "stub"), ("4 Commercial setup", "stub"),
+        ("5 Launch: drafts and approval", "done" if launch_done else ("now" if passed else "")),
         ("6 Operate", "stub"),
     ]
     if status == "stopped":
@@ -526,8 +540,10 @@ def _stepper(state: dict[str, Any], status: str) -> str:
 
 
 def _running_kind(state: dict[str, Any]) -> str:
-    if state.get("discover_approved"):
+    if state.get("validate_passed"):
         return "launch"
+    if state.get("discover_approved"):
+        return "validate"
     if state.get("stage") == "drafting the interview script":
         return "step2"
     return "step1"
@@ -580,7 +596,8 @@ def project_page(project_id: str, unclear: str = "") -> str:
         parts.append('<div class="stack" style="margin-bottom:16px">' + "".join(notices) + "</div>")
 
     if project_id in _running:
-        stage = state.get("launch_stage") if state.get("discover_approved") else state.get("stage")
+        kind = _running_kind(state)
+        stage = {"launch": state.get("launch_stage"), "validate": state.get("validate_stage")}.get(kind, state.get("stage"))
         parts.append(ui.working_card(str(stage or "starting"), _running_kind(state)))
         return _page(project.name, "".join(parts) + footer, refresh=3)
 
@@ -593,9 +610,11 @@ def project_page(project_id: str, unclear: str = "") -> str:
         ))
         parts.append(_opportunities(wf, project, state))
     elif awaiting == "phase_gate":
+        parts.append(_target_card(project_id, state))
         parts.append(ui.decision_panel(
             "Your decision: end of Discover", state,
-            "Continue approves the sharpened idea. The interview script below is for you to use with real people.",
+            "Continue approves the sharpened idea and starts Validate with the demand target above. "
+            "The interview script below is for you to use with real people.",
             _choice_buttons(project_id, STEP_CHOICES, rec), kicker="Gate · End of Discover",
         ))
         parts.append(_doc(project_id, "phase1_step2_interview_script.md"))
@@ -638,9 +657,12 @@ def project_page(project_id: str, unclear: str = "") -> str:
         parts.append('<section class="decision"><p class="kicker">Stopped</p><h2>You stopped this project.</h2>'
                      '<p class="hint">Stopping on weak evidence is a result, not a failure.</p>'
                      '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>')
-        parts.append(_doc(project_id, "phase1_gate_decision.md"))
-    elif state.get("discover_approved"):
+        latest = "phase2_gate_decision.md" if _own_output(project_id, "phase2_gate_decision.md") else "phase1_gate_decision.md"
+        parts.append(_doc(project_id, latest))
+    elif state.get("validate_passed"):
         parts.append(_launch_section(wf, project, state))
+    elif state.get("discover_approved"):
+        parts.append(_validate_section(wf, project, state))
     return _page(project.name, "".join(parts) + footer)
 
 
@@ -655,10 +677,10 @@ def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any])
     project_id = project.id
     actions = wf.launch_actions(project_id)
     stub = ('<div class="notice" style="margin-bottom:16px"><span class="icon orange">i</span><p><strong>STUBBED:</strong> '
-            "Validate, Build and Commercial setup are designed but not built in this prototype, so launch drafts are "
-            "based on the Discover result only.</p></div>")
+            "Build and Commercial setup are designed but not built in this prototype, so launch drafts are "
+            "based on the Discover option and the Validate result only.</p></div>")
     if not actions:
-        return (stub + '<section class="decision"><p class="kicker">Next step</p><h2>Discover is approved</h2>'
+        return (stub + '<section class="decision"><p class="kicker">Next step</p><h2>Validate passed</h2>'
                 '<p class="hint">Next, the launch writer drafts a store page and launch posts. Each draft is checked by the '
                 "guardrails and then waits for your approval. Nothing is published by Foundry.</p>"
                 f'<form method="post" action="/projects/{e(project_id)}/run/launch" style="margin-top:18px">'
@@ -676,27 +698,7 @@ def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any])
     for blocked in state.get("launch_blocked") or []:
         parts.append('<div style="margin-top:14px">'
                      + ui.alert("One draft was blocked by the guardrails and was not queued.", f"<p>{e(blocked)}</p>") + "</div>")
-    for a in actions:
-        status = a.status.value
-        card = (
-            '<article class="card draft-card" style="margin-top:16px"><div class="head">'
-            f"<h3>{e(a.title)}</h3>{ui.pill(names.get(status, status.upper()), tone.get(status, 'muted'))}</div>"
-            f'<pre class="draft">{e(a.body)}</pre>'
-            f'<p class="fingerprint">Fingerprint of this exact text: <code>{e(a.content_hash[:16])}</code></p>'
-        )
-        if status == "pending":
-            card += (
-                '<div class="row" style="margin-top:14px">'
-                f'<form method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/approve">'
-                f'<input type="hidden" name="seen_hash" value="{e(a.content_hash)}">'
-                '<button class="btn btn-primary" type="submit">Approve this exact text</button></form>'
-                f'<form class="row" method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/reject">'
-                '<input type="text" name="reason" style="width:15rem" placeholder="Reason (optional)">'
-                '<button class="btn btn-stop" type="submit">Reject</button></form></div>'
-            )
-        elif a.rejection_reason:
-            card += f'<p class="muted small">Reason: {e(a.rejection_reason)}</p>'
-        parts.append(card + "</article>")
+    parts.append(_approval_cards(project_id, actions))
     if decided:
         choice = str(state.get("launch_stage", "")).split(":")[-1].strip()
         parts.append('<section class="decision" style="margin-top:20px"><p class="kicker">Done</p><h2>Launch review finished</h2>'
@@ -714,6 +716,138 @@ def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any])
                      f"{_choice_buttons(project_id, STEP_CHOICES, action='launch-gate', typed=False)}</section>")
     parts.append('<div class="stack" style="margin-top:20px">'
                  + _doc(project_id, "payment_test_log.md", "Delivery test log (MOCKED, no payment took place)", open_=False)
+                 + _doc(project_id, "phase1_step2_interview_script.md", "Interview script", open_=False)
+                 + _research_fold(wf, project, state) + "</div>")
+    return "".join(parts)
+
+
+def _approval_cards(project_id: str, actions: list[Any], *, preview_landing: bool = False) -> str:
+    tone = {"pending": "solid-orange", "approved": "solid", "executed": "solid", "rejected": "muted"}
+    names = {"pending": "WAITING FOR YOU", "approved": "APPROVED", "executed": "APPROVED AND EXPORTED", "rejected": "REJECTED"}
+    out = []
+    for a in actions:
+        status = a.status.value
+        body = f'<pre class="draft">{e(a.body)}</pre>'
+        if preview_landing and a.action_type.value == "deploy":
+            # The draft page shown as a page, in a sandbox with scripts off. The exact source
+            # that would be approved is one click away.
+            body = (f'<iframe title="Landing page preview" sandbox="" srcdoc="{e(a.body)}" '
+                    'style="width:100%;height:520px;border:1px solid var(--line-2);border-radius:12px;background:#fff"></iframe>'
+                    f'<details class="typed"><summary>Show the exact HTML that would be approved</summary>{body}</details>')
+        card = (
+            '<article class="card draft-card" style="margin-top:16px"><div class="head">'
+            f"<h3>{e(a.title)}</h3>{ui.pill(names.get(status, status.upper()), tone.get(status, 'muted'))}</div>"
+            f"{body}"
+            f'<p class="fingerprint">Fingerprint of this exact text: <code>{e(a.content_hash[:16])}</code></p>'
+        )
+        if status == "approved":
+            # Approved but the export did not finish (for example a step failed): let the
+            # founder finish it. A fresh single-use token is issued for the same content.
+            card += (
+                '<p class="muted small" style="margin-top:12px">Approved, but the copy-ready file was not written yet.</p>'
+                f'<form method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/approve">'
+                f'<input type="hidden" name="seen_hash" value="{e(a.content_hash)}">'
+                '<button class="btn btn-primary" type="submit">Finish the export</button></form>'
+            )
+        if status == "pending":
+            card += (
+                '<div class="row" style="margin-top:14px">'
+                f'<form method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/approve">'
+                f'<input type="hidden" name="seen_hash" value="{e(a.content_hash)}">'
+                '<button class="btn btn-primary" type="submit">Approve this exact text</button></form>'
+                f'<form class="row" method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/reject">'
+                '<input type="text" name="reason" style="width:15rem" placeholder="Reason (optional)">'
+                '<button class="btn btn-stop" type="submit">Reject</button></form></div>'
+            )
+        elif a.rejection_reason:
+            card += f'<p class="muted small">Reason: {e(a.rejection_reason)}</p>'
+        out.append(card + "</article>")
+    return "".join(out)
+
+
+def _target_card(project_id: str, state: dict[str, Any]) -> str:
+    target = state.get("validate_target")
+    if target:
+        return ('<div class="notice" style="margin-bottom:16px"><span class="icon purple">&#10003;</span><p>'
+                f'<strong>Demand target fixed: {e(target["target"])} {e(target["what"])}.</strong> '
+                '<span class="muted">It is recorded in the decision log and cannot be changed once set.</span></p></div>')
+    return (
+        '<section class="card" style="margin-bottom:16px"><p class="kicker">Before Validate</p>'
+        "<h2>Fix your demand target</h2>"
+        '<p class="hint">Decide now, before any test runs, how much real demand would convince you. Foundry records it '
+        "and will not let it change later. Below half of it, Foundry will recommend stopping.</p>"
+        f'<form method="post" action="/projects/{e(project_id)}/target" class="row" style="margin-top:14px;align-items:flex-end">'
+        '<div><label class="small muted" for="t-n">Target</label><input id="t-n" type="text" name="target" inputmode="numeric" '
+        'pattern="[0-9]+" required value="20" style="width:7rem"></div>'
+        '<div style="flex:1;min-width:16rem"><label class="small muted" for="t-w">What counts as one</label>'
+        '<input id="t-w" type="text" name="what" value="waitlist sign-ups from people in the target market"></div>'
+        '<button class="btn btn-primary" type="submit">Fix the target</button></form></section>'
+    )
+
+
+def _validate_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
+    project_id = project.id
+    stage = state.get("validate_stage")
+    target = state.get("validate_target") or {}
+    target_line = f'{e(target.get("target", "?"))} {e(target.get("what", ""))}'
+    if stage in (None, "ready"):
+        return (
+            '<section class="decision"><p class="kicker">Phase 2 · Validate</p><h2>Design the business and a demand test</h2>'
+            f'<p class="hint">Your demand target is fixed: <strong>{target_line}</strong>. The strategist drafts a Lean Canvas '
+            "(each box sourced or labelled ASSUMPTION), a plan for a landing-page test, the landing page and an invite post. "
+            "The page and the post wait for your approval; Foundry publishes nothing.</p>"
+            f'<form method="post" action="/projects/{e(project_id)}/run/validate" style="margin-top:18px">'
+            '<button class="btn btn-primary btn-lg" type="submit">Draft the Lean Canvas and landing page '
+            '<span class="arrow">&rarr;</span></button></form></section>'
+            + _doc(project_id, "phase1_step2_interview_script.md", "Interview script", open_=False)
+            + _research_fold(wf, project, state)
+        )
+    parts = ['<div class="block-head"><div><p class="kicker">Phase 2 · Validate</p><h2>Run the demand test</h2></div></div>'
+             f'<p class="muted">Target, fixed before the test: <strong>{target_line}</strong>. '
+             "Approve the landing page and the post, publish them yourself, then record what really happened.</p>"]
+    for blocked in state.get("validate_blocked") or []:
+        parts.append('<div style="margin-top:14px">'
+                     + ui.alert("One draft was blocked by the guardrails and was not queued.", f"<p>{e(blocked)}</p>") + "</div>")
+    parts.append(_approval_cards(project_id, wf.validate_actions(project_id), preview_landing=True))
+
+    results = state.get("validate_results") or []
+    recorded = "".join(f"<li>{e(r['count'])} {e(r['kind'])}{(': ' + e(r['note'])) if r['note'] else ''}</li>" for r in results)
+    parts.append(
+        '<section class="card" style="margin-top:20px"><p class="kicker">Real results only</p><h2>Record what happened</h2>'
+        '<p class="hint">Count only real people in your target market: sign-ups, interviews where they described the problem, '
+        "or pre-orders. Foundry never creates sign-ups, and test entries do not count.</p>"
+        + (f'<ul style="margin:12px 0 0 18px">{recorded}</ul>' if recorded else "")
+        + f'<form method="post" action="/projects/{e(project_id)}/validate-results" style="margin-top:14px">'
+        '<div class="row" style="align-items:flex-end">'
+        '<div><label class="small muted" for="r-n">How many</label><input id="r-n" type="text" name="count" inputmode="numeric" '
+        'pattern="[0-9]+" required style="width:7rem"></div>'
+        '<div><label class="small muted" for="r-k">Of what</label><input id="r-k" type="text" name="kind" value="waitlist sign-ups" style="width:14rem"></div>'
+        '<div style="flex:1;min-width:14rem"><label class="small muted" for="r-note">Where from (optional)</label>'
+        '<input id="r-note" type="text" name="note" placeholder="For example: shared in two design groups for 7 days"></div></div>'
+        '<label class="small" style="display:flex;gap:8px;align-items:center;margin-top:12px">'
+        '<input type="checkbox" name="confirmed" value="yes" required> These are real people, not estimates or test entries.</label>'
+        '<button class="btn btn-primary" type="submit" style="margin-top:12px">Record results</button></form></section>'
+    )
+
+    if stage == "results_recorded":
+        check = wf.validate_check(project_id)
+        rec = {"advance": "continue"}.get(check.recommendation.value, check.recommendation.value)
+        view = {"recommendation": rec, "recommendation_reason": check.recommendation_reason}
+        allowed = STEP_CHOICES if check.ready_to_advance else tuple(c for c in STEP_CHOICES if c != "continue")
+        hint = ("The gate is met. Continue opens Launch drafts." if check.ready_to_advance else
+                f"The gate is not met ({e(check.metrics.get('recorded_demand_signals', 0))} of "
+                f"{e(check.metrics.get('target', 0))}). Foundry will not continue past a failed evidence gate: "
+                "repeat the test, go back to Discover, or stop.")
+        parts.append('<div style="margin-top:20px">' + ui.decision_panel(
+            "Your decision: Validate", view, hint,
+            _choice_buttons(project_id, allowed, rec, action="validate-gate", typed=False), kicker="Gate · Validate",
+        ) + "</div>")
+    else:
+        parts.append('<div class="notice" style="margin-top:16px"><span class="icon purple">i</span><p>'
+                     "<strong>Waiting for your results.</strong> <span class=\"muted\">The Validate decision appears "
+                     "once you record what happened, even if the answer is zero.</span></p></div>")
+    parts.append('<div class="stack" style="margin-top:20px">'
+                 + _doc(project_id, "phase2_step1_lean_canvas.md", "Lean Canvas and demand-test plan", open_=True)
                  + _doc(project_id, "phase1_step2_interview_script.md", "Interview script", open_=False)
                  + _research_fold(wf, project, state) + "</div>")
     return "".join(parts)
@@ -737,6 +871,40 @@ def reject_action(project_id: str, action_id: str, reason: str = Form("")):
     try:
         get_workflow().reject(action_id, reason.strip())
     except OutboxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/target")
+def set_target(project_id: str, target: str = Form(...), what: str = Form("")):
+    try:
+        get_workflow().set_validate_target(project_id, int(target.strip() or 0), what)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="The target must be a whole number.") from exc
+    except (WorkflowError, OrchestratorError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/validate-results")
+def validate_results(project_id: str, count: str = Form(...), kind: str = Form(""), note: str = Form(""),
+                     confirmed: str = Form("")):
+    try:
+        get_workflow().record_validate_results(
+            project_id, int(count.strip() or -1), kind, note, confirmed_real=confirmed == "yes"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Enter a whole number, 0 or more.") from exc
+    except (WorkflowError, OrchestratorError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/validate-gate")
+def validate_gate(project_id: str, choice: str = Form(...)):
+    try:
+        get_workflow().decide_validate(project_id, choice)
+    except (WorkflowError, OrchestratorError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -780,9 +948,14 @@ def run_step(project_id: str, step: str):
     wf = get_workflow()
     state = wf.get_state(project_id)
     if step == "launch":
-        if not state.get("discover_approved") or wf.launch_actions(project_id):
+        if not state.get("validate_passed") or wf.launch_actions(project_id):
             raise HTTPException(status_code=409, detail="Launch drafts cannot be started now.")
         _start_step(project_id, "launch")
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+    if step == "validate":
+        if not state.get("discover_approved") or state.get("validate_stage") not in (None, "ready"):
+            raise HTTPException(status_code=409, detail="Validate cannot be started now.")
+        _start_step(project_id, "validate")
         return RedirectResponse(f"/projects/{project_id}", status_code=303)
     expected = {"step1": "run_step1", "step2": "run_step2"}.get(step)
     if expected is None or state.get("awaiting") != expected:

@@ -253,6 +253,7 @@ Build order:
 | Evidence store with fetched-page quote check, hash-chained log, approval tokens, state machine, gates with STOP recommendation | Working |
 | `docker compose up`: app, Ollama with model pull, SearXNG | Working |
 | Brief intake, Discover (researcher, critic, interview script), step gates in the browser | Working |
-| Launch drafts into the approval queue, approval screen, `delivery.py` (`MOCKED`) | Working, from the Discover option only |
+| Validate: demand target fixed at the end of Discover, Lean Canvas, landing page and invite post for approval, STOP below half the target | Working |
+| Launch drafts into the approval queue, approval screen, `delivery.py` (`MOCKED`) | Working; opens after Validate passes |
 | Guardrails: secrets detector, keyword backstop, tool allowlist, model classifier failing closed; `evals/` with block and allow cases | Working |
-| Validate, Build, Commercial setup, Operate agents; committed demo run | Not built |
+| Build, Commercial setup, Operate agents; committed demo run | Not built |

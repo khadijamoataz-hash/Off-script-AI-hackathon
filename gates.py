@@ -88,7 +88,7 @@ PHASE_DEFINITIONS: dict[PhaseName, PhaseDefinition] = {
         title="2. Validate",
         entry_criteria="Approved idea brief + pre-committed evidence target set before validation.",
         gate_type=GateType.EVIDENCE_TARGET,
-        gate_description="Sourced FACT claims + recorded demand signals >= validate_evidence_target, plus founder approval.",
+        gate_description="Founder-recorded demand signals >= the target fixed before Validate, at least one sourced FACT, plus founder approval.",
     ),
     PhaseName.BUILD: PhaseDefinition(
         name=PhaseName.BUILD,
@@ -173,7 +173,9 @@ def evaluate_gate(
             project_id=project_id,
             claim_type=ClaimType.FACT,
         )
-        evidence_score = len(fact_claims) + proj.recorded_demand_signals
+        # Only real demand counts toward the target: sign-ups, interviews or pre-orders the
+        # founder recorded. Fetched sources support the plan but are not demand.
+        evidence_score = proj.recorded_demand_signals
         metrics = {
             "sourced_facts": len(fact_claims),
             "recorded_demand_signals": proj.recorded_demand_signals,
@@ -186,8 +188,7 @@ def evaluate_gate(
             )
         if evidence_score < proj.validate_evidence_target:
             blockers.append(
-                f"Evidence target not yet reached: have {evidence_score} "
-                f"({len(fact_claims)} sourced facts + {proj.recorded_demand_signals} signals), "
+                f"Evidence target not yet reached: {evidence_score} real demand signals recorded, "
                 f"need >= {proj.validate_evidence_target}."
             )
 

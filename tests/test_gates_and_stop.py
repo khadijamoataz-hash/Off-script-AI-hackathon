@@ -37,7 +37,7 @@ def test_gate_recommends_stop_when_evidence_is_weak(tmp_path: Path) -> None:
     check = orch.check_gate(pid)
     assert check.ready_to_advance is False
     assert check.recommendation == GateOutcome.STOP
-    assert "12 of the 100" in check.recommendation_reason
+    assert "11 of the 100" in check.recommendation_reason
 
     # The founder cannot push past a failed evidence gate, and the block is logged with the advice
     with pytest.raises(OrchestratorError, match="Evidence target not yet reached"):

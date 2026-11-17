@@ -41,7 +41,7 @@ Each phase lists its agents, tools, method and output. Output files go to `outpu
 - **Core step:** design the business.
 - **Agents:** `agents/strategist.py`.
 - **Tools:** evidence store, file tools.
-- **Method:** fill a Lean Canvas where each box is a sourced claim or an `ASSUMPTION`. Before any test runs, the founder and system fix a demand target (for example 100 waitlist sign-ups in 14 days) and it is written to the log; it cannot be changed once the phase starts. The strategist drafts a landing page with no fake testimonials, counters or countdown timers; placeholder slots read `[Real customer quote - collect after launch]`. Publishing the page is a proposed action the founder approves. The founder records real sign-ups or interview results.
+- **Method:** at the end of Discover, before Validate starts, the founder fixes a demand target (for example 50 waitlist sign-ups from the target market); it is written to the log and cannot be changed afterwards. The strategist fills a Lean Canvas from the sources fetched in Discover: each box is a claim, sourced only if its quote is found in a fetched page, otherwise `ASSUMPTION`. It names the riskiest assumption and writes a plan for a landing-page demand test. The landing page is rendered by code from typed fields, so it has placeholder slots (`[Real customer quote - collect after launch]`, `[YOUR-FORM-URL]`) and no testimonials, counters, prices or countdowns. The page (`deploy`) and an invite post (`post`) pass the guardrails and wait in the approval queue; the founder publishes them. The founder then records real results and confirms they are real people; simulated or test entries never count. Launch opens only when this gate passes.
 - **Output:** `phase2_step1_lean_canvas.md`, `phase2_step2_landing_page.html`, `phase2_gate_decision.md`.
 
 ### Phase 3: Build
@@ -82,13 +82,13 @@ Every step ends with a gate. After each step the system shows a summary, its rec
 | Gate type | What it checks |
 |---|---|
 | Founder approval | The founder has reviewed the step's output and chosen an outcome |
-| Evidence target | Sourced claims plus founder-recorded demand signals reach the target fixed before the phase started |
+| Evidence target | Real demand recorded by the founder (sign-ups, interviews, pre-orders) reaches the target fixed before the phase started; at least one sourced fact exists. Fetched sources alone never meet a demand target |
 | Tests pass | The sandboxed test run passed |
 
 | Phase | Gate |
 |---|---|
 | Discover | Founder approves the sharpened idea |
-| Validate | Evidence target reached, plus founder approval |
+| Validate | Evidence target reached, plus founder approval. Below target, continue is refused and the refusal is logged |
 | Build | Tests pass, plus founder review |
 | Commercial setup | Founder approves pricing and policy drafts |
 | Launch | No draft left unreviewed, at least one approved, plus founder approval |
@@ -138,26 +138,26 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 | Evidence store (`evidence.py`) | Working; a FACT needs a page fetched in the run that contains the quote |
 | Phase 1 Discover agents and step runner (`agents/researcher.py`, `agents/critic.py`, `workflow.py`) | Working |
 | Step gates and approval screen in the browser (`app.py`) | Working |
-| Phase 5 Launch drafts into the approval queue (`agents/launcher.py`) | Working, from the Discover option only |
+| Phase 2 Validate: Lean Canvas, demand test, landing page, evidence gate (`agents/strategist.py`, `workflow.py`) | Working |
+| Phase 5 Launch drafts into the approval queue (`agents/launcher.py`) | Working; opens after Validate passes |
 | Delivery (`delivery.py`) | MOCKED |
 | Decision log (`decision_log.py`) | Working |
 | Approval queue and tokens (`approval.py`) | Working |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (`guardrails.py`) | Working; keyword rules are English only |
 | Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on the founder brief and on drafts entering the approval queue; a small local model, so not perfect (see `evals/results.md`) |
 | Model adapter (`llm.py`) | Working |
-| Phase 2 Validate, Phase 3 Build, Phase 4 Commercial setup, Phase 6 Operate agents | STUBBED |
+| Phase 3 Build, Phase 4 Commercial setup, Phase 6 Operate agents | STUBBED |
 | Sandboxed test runner, CLI | STUBBED |
 | Posting connectors | STUBBED by design (copy-ready text only) |
 | Payments, sale to cash | Not built; no payment code |
 
 ## Roadmap
 
-Done in the prototype: brief intake with immediate rejection of non-digital products; Discover with fetched sources and step gates in the browser; the approval screen with Launch drafts and `MOCKED` delivery; guardrails with a fail-closed model classifier and public evals.
+Done in the prototype: brief intake with immediate rejection of non-digital products; Discover with fetched sources and step gates in the browser; Validate with a Lean Canvas, landing page, a demand target fixed in advance and STOP on weak demand; the approval screen with Launch drafts and `MOCKED` delivery; guardrails with a fail-closed model classifier and public evals.
 
 Next:
 
-1. Validate agent: Lean Canvas, landing page, demand target fixed before the phase starts, STOP below half the target.
-2. Speed: shorter agent outputs and parallel checks, so a full run fits in about three minutes on a laptop.
-3. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
-4. Build, Commercial setup and Operate agents.
-5. After the hackathon: community playbooks per product type, more search sources, and a hosted option for founders who cannot run a model.
+1. Speed: shorter agent outputs and parallel checks, so a full run fits in about three minutes on a laptop.
+2. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
+3. Build, Commercial setup and Operate agents.
+4. After the hackathon: community playbooks per product type, more search sources, and a hosted option for founders who cannot run a model.

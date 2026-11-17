@@ -147,3 +147,16 @@ def test_policy_engine_allows_legitimate_evidence_backed_founder_drafts(
             "We guarantee you will make $10k profit in 7 days!",
             context=PolicyContext(surface="agent_output"),
         )
+
+
+def test_exporting_an_approved_draft_checks_it_as_a_draft() -> None:
+    engine = PolicyEngine()
+    body = "We send the right message at the right time automatically, so you can focus on design."
+    assert engine.evaluate_tool_call(
+        "execute_outbox_action", {"body": body}, has_valid_approval_token=True
+    ).allowed
+    assert not engine.evaluate_tool_call(
+        "execute_outbox_action", {"body": "You will definitely make $5,000 in your first month."},
+        has_valid_approval_token=True,
+    ).allowed
+    assert not engine.evaluate_tool_call("execute_outbox_action", {"body": body}).allowed  # no token

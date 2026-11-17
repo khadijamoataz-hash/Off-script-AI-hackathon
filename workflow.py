@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from agents.critic import CriticOutput, critique
 from agents.launcher import LaunchDrafts, draft_launch, render_store_page
+from agents.strategist import CANVAS_BOXES, StrategyOutput, design_business, render_landing_page
 from agents.intake import EXCLUDED_LABELS, BriefScreen, FounderBrief, screen_brief
 from agents.researcher import (
     InterviewScript,
@@ -39,9 +40,9 @@ from guardrails import (
     PolicyEngine,
     PolicyViolationError,
 )
-from gates import GateOutcome, PhaseName, ProjectStatus
+from gates import GateCheckResult, GateOutcome, PhaseName, ProjectStatus
 from llm import LLMAdapter, build_llm_safety_classifier
-from orchestrator import Orchestrator, ProjectRecord
+from orchestrator import Orchestrator, OrchestratorError, ProjectRecord
 from tools import SearchResult, ToolError, fetch_url, web_search
 
 _INDEX_LOCK = threading.Lock()
@@ -543,6 +544,10 @@ class Workflow:
 
         # Phase gate.
         if choice == "continue":
+            if not state.get("validate_target"):
+                raise WorkflowError(
+                    "Set the demand target for Validate first. It is fixed before the test starts."
+                )
             self.orch.decide_gate(project_id, GateOutcome.ADVANCE, founder_approved=True, rationale=note)
             self._write_decision(project, state, "continue")
             return self._set_state(
@@ -579,6 +584,190 @@ class Workflow:
         )
         return self._set_state(project_id, stage="ready to repeat step 1", awaiting="run_step1")
 
+    # ------------------------------------------------------------------ validate
+
+    def set_validate_target(self, project_id: str, target: int, what_counts: str) -> dict[str, Any]:
+        """The founder fixes the demand target before Validate starts. It cannot change later."""
+        state = self.get_state(project_id)
+        if state.get("awaiting") != "phase_gate":
+            raise WorkflowError("The demand target is set at the end of Discover, before Validate starts.")
+        if state.get("validate_target"):
+            raise WorkflowError("The demand target is already fixed and cannot be changed.")
+        what = " ".join(what_counts.split())[:200] or "waitlist sign-ups from people in the target market"
+        if target < 1:
+            raise WorkflowError("The target must be at least 1.")
+        self.orch.set_validate_evidence_target(project_id, target)
+        self.log.append(
+            action="fix_demand_target", agent="founder", actor="founder_approval",
+            phase=PhaseName.DISCOVER.value,
+            decision=f"Demand target fixed before Validate: {target} {what}.",
+            outcome="recorded", sources=[], model=None, cost=0, project_id=project_id,
+            metadata={"target": target, "what_counts": what},
+        )
+        return self._set_state(project_id, validate_target={"target": target, "what": what})
+
+    def run_validate_step1(self, project_id: str) -> dict[str, Any]:
+        """Lean Canvas, demand-test plan, landing page and invite post. The page and the post go
+        to the approval queue; the founder runs the test and records real results."""
+        project = self.orch._require_project(project_id)
+        state = self.get_state(project_id)
+        if not state.get("discover_approved") or project.current_phase != PhaseName.VALIDATE:
+            raise WorkflowError("Validate starts after the founder approves Discover.")
+        if state.get("validate_stage") not in (None, "ready", "drafting"):
+            raise WorkflowError("This Validate step has already run.")
+        phase = PhaseName.VALIDATE.value
+        started = time.monotonic()
+        self._set_state(project_id, validate_stage="drafting", error=None)
+        artifact = project.phase_artifacts[PhaseName.DISCOVER.value]
+        option = Opportunity(**artifact["recommended_option"])
+        brief = self._brief(project)
+        pages = self.ledger.list_fetches(project_id=project_id)[:MAX_PAGES]
+        keywords = set(re.findall(r"[a-z]{4,}", f"{brief.idea} {option.problem}".lower()))
+        excerpts = [select_excerpt(page.text, keywords) for page in pages]
+
+        strategy = design_business(
+            self.adapter, brief, option, artifact.get("critic", {}).get("risks", []), pages, excerpts
+        )
+        self._add_usage(project_id, strategy)
+        out = strategy.output
+        claims: list[tuple[str, Claim]] = []
+        for key, label in CANVAS_BOXES:
+            box = getattr(out.canvas, key)
+            url = None
+            if box.source_number is not None and 1 <= box.source_number <= len(pages):
+                url = pages[box.source_number - 1].url
+            claims.append((label, self.ledger.add_claim(
+                f"{label}: {box.text}", project_id=project_id, linked_phase=phase,
+                source_url=url, quote=box.quote,
+            )))
+        facts = [c for _, c in claims if c.claim_type == ClaimType.FACT]
+        self.log.append(
+            action="design_business", agent="strategist", actor="agent_proposal", phase=phase,
+            decision=(
+                f"Drafted a Lean Canvas ({len(facts)} boxes sourced, {len(claims) - len(facts)} "
+                "labelled ASSUMPTION), a demand-test plan, a landing page and an invite post."
+            ),
+            outcome="proposed", sources=sorted({c.source_url for c in facts if c.source_url}),
+            model=strategy.model, cost=0, project_id=project_id,
+            evidence_ids=[c.id for _, c in claims], metadata={"tokens": strategy.tokens},
+        )
+
+        landing_html = render_landing_page(out.landing)
+        queued: list[str] = []
+        blocked: list[str] = []
+        for step, action_type, target, title, body in (
+            (2, "deploy", "landing page", "Publish the landing page", landing_html),
+            (2, "post", "invite post", "Post inviting people to the landing page", out.invite_post),
+        ):
+            try:
+                queued.append(self.orch.outbox.propose_action(
+                    project_id=project_id, phase=phase, step=step, action_type=action_type,
+                    target=target, title=title, body=body,
+                ).id)
+            except PolicyViolationError as exc:
+                blocked.append(f"{title}: {exc}")
+
+        target = state.get("validate_target") or {}
+        files = [
+            self._write(project_id, "phase2_step1_lean_canvas.md", self._scrub(project_id, phase, render_lean_canvas(
+                project, out, claims, target, iteration=project.phase_iterations.get(phase, 1)))),
+            self._write(project_id, "phase2_step2_landing_page.html", landing_html if not any(
+                b.startswith("Publish the landing page") for b in blocked)
+                else "<!doctype html><p>The landing page draft was blocked by the guardrails and was not queued.</p>\n"),
+        ]
+        self.orch.save_phase_artifact(
+            project_id, PhaseName.VALIDATE, {"strategy": out.model_dump()},
+            evidence_ids=[c.id for _, c in claims], agent="strategist", model=strategy.model,
+        )
+        self._write_validate_gate(project, founder_decision=None)
+        return self._set_state(
+            project_id, validate_stage="awaiting_results", validate_actions=queued,
+            validate_blocked=blocked, files=state.get("files", []) + files,
+            seconds_validate=round(time.monotonic() - started, 1),
+        )
+
+    def validate_actions(self, project_id: str) -> list[ProposedAction]:
+        return [
+            a for a in self.orch.outbox.list_actions(project_id=project_id)
+            if a.phase == PhaseName.VALIDATE.value
+        ]
+
+    def record_validate_results(
+        self, project_id: str, count: int, kind: str, note: str = "", *, confirmed_real: bool
+    ) -> dict[str, Any]:
+        """The founder records what really happened in the demand test. Only real people count."""
+        state = self.get_state(project_id)
+        if state.get("validate_stage") not in ("awaiting_results", "results_recorded"):
+            raise WorkflowError("Results can be recorded after the Validate drafts are ready.")
+        if not confirmed_real:
+            raise WorkflowError(
+                "Only real results count. Confirm these are real people, not estimates or test entries."
+            )
+        if count < 0 or count > 100000:
+            raise WorkflowError("Enter the number of real signals, 0 or more.")
+        kind = " ".join(kind.split())[:80] or "sign-ups"
+        note = " ".join(note.split())[:300]
+        self.orch.record_demand_signals(
+            project_id, count, note=f"Founder recorded {count} {kind}. {note}".strip()
+        )
+        project = self.orch._require_project(project_id)
+        history = state.get("validate_results", []) + [{"count": count, "kind": kind, "note": note}]
+        self._set_state(project_id, validate_stage="results_recorded", validate_results=history)
+        self._write_validate_gate(project, founder_decision=None)
+        return self.get_state(project_id)
+
+    def validate_check(self, project_id: str) -> GateCheckResult:
+        return self.orch.check_gate(project_id)
+
+    def decide_validate(self, project_id: str, choice: str, *, note: str = "") -> dict[str, Any]:
+        if choice not in STEP_CHOICES:
+            raise WorkflowError(f"Choice must be one of {STEP_CHOICES}.")
+        project = self.orch._require_project(project_id)
+        state = self.get_state(project_id)
+        if project.current_phase != PhaseName.VALIDATE or state.get("validate_stage") not in (
+            "awaiting_results", "results_recorded"
+        ):
+            raise WorkflowError("No Validate decision is waiting.")
+        if choice == "continue" and state.get("validate_stage") != "results_recorded":
+            raise WorkflowError("Record the real results of the demand test first.")
+        check = self.orch.check_gate(project_id) if choice == "continue" else None
+        if check is not None and not check.ready_to_advance:
+            # Logged by the orchestrator with the system's recommendation, then refused.
+            try:
+                self.orch.decide_gate(project_id, GateOutcome.ADVANCE, founder_approved=True)
+            except OrchestratorError:
+                pass
+            raise WorkflowError(
+                "The Validate gate is not met, so Foundry cannot continue: "
+                + "; ".join(check.blockers)
+                + " You can repeat the test, go back to Discover, or stop."
+            )
+        self._write_validate_gate(project, founder_decision=choice)
+        if choice == "continue":
+            self.orch.decide_gate(project_id, GateOutcome.ADVANCE, founder_approved=True, rationale=note)
+            return self._set_state(project_id, validate_stage="passed", validate_passed=True)
+        if choice == "repeat":
+            self.orch.decide_gate(project_id, GateOutcome.REPEAT, founder_approved=True, rationale=note)
+            return self._set_state(project_id, validate_stage="ready")
+        if choice == "go_back":
+            self.orch.decide_gate(
+                project_id, GateOutcome.PIVOT_BACK, founder_approved=True,
+                target_phase=PhaseName.DISCOVER, rationale=note,
+            )
+            return self._set_state(
+                project_id, validate_stage=None, discover_approved=False,
+                awaiting="phase_gate", stage="back to the Discover decision",
+            )
+        self.orch.decide_gate(project_id, GateOutcome.STOP, founder_approved=True, rationale=note)
+        return self._set_state(project_id, validate_stage="stopped", stage="stopped by founder")
+
+    def _write_validate_gate(self, project: ProjectRecord, *, founder_decision: str | None) -> None:
+        project = self.orch._require_project(project.id)
+        state = self.get_state(project.id)
+        check = self.orch.check_gate(project.id) if project.current_phase == PhaseName.VALIDATE else None
+        self._write(project.id, "phase2_gate_decision.md", render_validate_gate(
+            project, state, check, founder_decision))
+
     # ------------------------------------------------------------------ launch drafts
 
     def run_launch_drafts(self, project_id: str) -> dict[str, Any]:
@@ -587,8 +776,10 @@ class Workflow:
         project = self.orch._require_project(project_id)
         artifact = project.phase_artifacts.get(PhaseName.DISCOVER.value)
         state = self.get_state(project_id)
-        if not artifact or not state.get("discover_approved"):
-            raise WorkflowError("Launch drafts need a Discover option the founder has approved.")
+        if not artifact or not state.get("validate_passed"):
+            raise WorkflowError(
+                "Launch drafts need a passed Validate gate: real demand at or above the target."
+            )
         phase = PhaseName.LAUNCH.value
         self._set_state(project_id, launch_stage="drafting")
         option = Opportunity(**artifact["recommended_option"])
@@ -856,4 +1047,93 @@ def render_gate_decision(
             f"## Cost of this run so far\n\n$0.00 ({usage['model_calls']} calls to local model "
             f"`{usage.get('model')}`, {total} tokens)."
         )
+    return "\n\n".join(parts)
+
+
+def render_lean_canvas(
+    project: ProjectRecord, strategy: StrategyOutput, claims: list[tuple[str, Claim]],
+    target: dict[str, Any], *, iteration: int = 1,
+) -> str:
+    facts = sum(1 for _, c in claims if c.claim_type == ClaimType.FACT)
+    rows = ["| Box | What we believe | Status | Source and supporting quote |", "|---|---|---|---|"]
+    for label, claim in claims:
+        text = claim.text.split(": ", 1)[-1]
+        if claim.claim_type == ClaimType.FACT:
+            rows.append(f"| {label} | {_cell(text)} | Sourced | {claim.source_url} : \"{_cell(claim.quote or '')}\" |")
+        else:
+            rows.append(f"| {label} | {_cell(text)} | `ASSUMPTION` | none |")
+    target_line = (
+        f"**{target.get('target')} {target.get('what')}**, fixed by the founder before Validate "
+        "started. It cannot be changed now."
+        if target else "Not set."
+    )
+    parts = [
+        "# Phase 2, step 1: Lean Canvas and demand test",
+        f"Project `{project.id}`, Validate iteration {iteration}. Generated by the strategist agent.",
+        f"Evidence: {facts} of {len(claims)} boxes are backed by a fetched source; the rest are "
+        "labelled `ASSUMPTION` and are what the demand test has to check.",
+        "## Lean Canvas",
+        "\n".join(rows),
+        "## Riskiest assumption",
+        strategy.riskiest_assumption,
+        "## Demand test",
+        f"Target: {target_line}",
+        strategy.test_plan,
+        "Only results from real people count. Foundry does not create sign-ups, and simulated "
+        "or test entries are never counted toward the target.",
+        "## Landing page and invite post",
+        "Drafts for the founder: `phase2_step2_landing_page.html` and an invite post. Both wait "
+        "in the approval queue; Foundry publishes nothing.",
+        f"Invite post draft:\n\n> {strategy.invite_post}",
+    ]
+    return "\n\n".join(parts)
+
+
+def render_validate_gate(
+    project: ProjectRecord, state: dict[str, Any], check: GateCheckResult | None,
+    founder_decision: str | None,
+) -> str:
+    target = state.get("validate_target") or {}
+    results = state.get("validate_results") or []
+    parts = [
+        "# Phase 2 gate decision: Validate",
+        f"Project `{project.id}`: {project.idea_summary}",
+    ]
+    if check is not None:
+        metrics = check.metrics
+        have, need = metrics.get("recorded_demand_signals", 0), metrics.get("target", 0)
+        if not results:
+            parts.append(
+                "**System recommendation: pending.** The demand test has not been run yet; no "
+                "results are recorded."
+            )
+        else:
+            parts.append(
+                f"**System recommendation: {check.recommendation.value.upper()}.** "
+                f"{check.recommendation_reason}"
+            )
+        parts += [
+            "## Evidence against the target",
+            "| Measure | Value |\n|---|---|\n"
+            f"| Target, fixed before Validate | {need} {target.get('what', '')} |\n"
+            f"| Real demand signals recorded by the founder | {have} |\n"
+            f"| Sourced facts in the evidence store | {metrics.get('sourced_facts', 0)} |\n"
+            f"| Gate met | {'yes' if check.ready_to_advance else 'no'} |",
+        ]
+        if check.blockers:
+            parts.append("What blocks the gate:\n" + "\n".join(f"- {b}" for b in check.blockers))
+    if results:
+        parts.append(
+            "## Results recorded by the founder\n\n"
+            + "\n".join(f"- {r['count']} {r['kind']}{': ' + r['note'] if r['note'] else ''}" for r in results)
+        )
+    parts += [
+        "**Founder decision:** "
+        + (founder_decision.upper() if founder_decision else "pending (waiting for the founder)"),
+        "## How this gate works",
+        "Only real demand counts: sign-ups, interviews or pre-orders from real people, recorded "
+        "by the founder. Below half of the target the system recommends STOP; between half and "
+        "the target it recommends REPEAT. Foundry does not let a project continue past a failed "
+        "evidence gate: the founder can repeat the test, go back to Discover, or stop.",
+    ]
     return "\n\n".join(parts)

@@ -69,3 +69,42 @@ def test_gate_needs_a_clear_founder_choice(tmp_path: Path, monkeypatch) -> None:
     client.post(f"{url}/decide", data={"choice": "stop"})
     assert orch.get_project(pid).status.value == "stopped"
     assert "You stopped this project" in client.get(url).text
+
+
+def test_validate_screens_fix_the_target_and_refuse_to_continue_on_weak_demand(tmp_path: Path, monkeypatch) -> None:
+    from tests.test_workflow_discover import STRATEGY
+
+    def no_search(query: str):
+        raise ToolError("search is down")
+
+    replies = [json.dumps(r) for r in (SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY)]
+    orch = Orchestrator(tmp_path / "db.sqlite3", decision_log=DecisionLog(tmp_path / "log.json"))
+    wf = Workflow(orch, LLMAdapter(provider=OfflineDeterministicProvider(replies)),
+                  out_dir=tmp_path / "outputs", search=no_search, classifier=CLEAN)
+    monkeypatch.setattr(app_module, "_workflow", wf)
+    client = TestClient(app_module.app, follow_redirects=False)
+
+    url = client.post("/projects", data={"idea": "An invoice reminder tool for freelance designers"}).headers["location"]
+    pid = url.rsplit("/", 1)[1]
+    _wait(pid)
+    client.post(f"{url}/decide", data={"choice": "continue"})
+    _wait(pid)
+    assert "Fix your demand target" in client.get(url).text
+    assert client.post(f"{url}/decide", data={"choice": "continue"}).status_code == 409
+    client.post(f"{url}/target", data={"target": "50", "what": "waitlist sign-ups"})
+    assert client.post(f"{url}/target", data={"target": "1", "what": "x"}).status_code == 409
+    client.post(f"{url}/decide", data={"choice": "continue"})
+    assert "Draft the Lean Canvas" in client.get(url).text
+    assert client.post(f"{url}/run/launch").status_code == 409            # Launch waits for Validate
+
+    client.post(f"{url}/run/validate")
+    _wait(pid)
+    page = client.get(url).text
+    assert "Publish the landing page" in page and "sandbox=" in page and "Record what happened" in page
+    assert client.post(f"{url}/validate-results", data={"count": "4", "kind": "sign-ups"}).status_code == 409
+    client.post(f"{url}/validate-results", data={"count": "4", "kind": "sign-ups", "confirmed": "yes"})
+    page = client.get(url).text
+    assert "Foundry recommends: STOP" in page and 'value="continue"' not in page
+    assert client.post(f"{url}/validate-gate", data={"choice": "continue"}).status_code == 409
+    client.post(f"{url}/validate-gate", data={"choice": "stop"})
+    assert "Phase 2 gate decision" in client.get(url).text

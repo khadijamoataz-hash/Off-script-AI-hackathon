@@ -17,6 +17,7 @@ Other commands:
 ```bash
 python -m pytest -q                       # smoke tests
 python scripts/verify_decision_log.py     # check decision_log.json keys and hash chain
+python scripts/run_delivery_test.py       # MOCKED delivery test, writes outputs/payment_test_log.md
 python -m evals.run                       # guardrail evals, rules only (no model needed)
 python -m evals.run --model               # all guardrail evals through the local model
 ```
@@ -30,10 +31,10 @@ python -m evals.run --model               # all guardrail evals through the loca
 | Evidence store: a claim is sourced only if its page was fetched and contains the quote, otherwise `ASSUMPTION` | **Working** | `evidence.py` |
 | Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
 | Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
-| Phase 2 Validate: design the business | **STUBBED** | not built |
+| Phase 2 Validate: Lean Canvas (each box sourced or `ASSUMPTION`), landing page and invite post for approval, demand target fixed before the test, STOP below half the target | **Working** | `agents/strategist.py`, `workflow.py` |
 | Phase 3 Build: build the product | **STUBBED** | not built |
 | Phase 4 Commercial setup: price and policies | **STUBBED** | not built |
-| Phase 5 Launch: store page and launch post drafts, queued for approval | **Working**, based on the Discover option only while Phases 2 to 4 are stubbed | `agents/launcher.py`, `workflow.py` |
+| Phase 5 Launch: store page and launch post drafts, queued for approval; opens only after Validate passes | **Working**; Build and Commercial setup are stubbed, so drafts use the Discover and Validate results | `agents/launcher.py`, `workflow.py` |
 | Approve or reject the exact text in the browser; approved text is exported as a copy-ready file | **Working** | `app.py`, `approval.py` |
 | Phase 5 Launch: automatic delivery to buyers | **MOCKED** | `delivery.py`: simulated order, no payment |
 | Phase 6 Operate and learn | **STUBBED** | not built |
@@ -45,7 +46,7 @@ python -m evals.run --model               # all guardrail evals through the loca
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
 
-Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phases 2 to 4 are stubbed, the state machine's recorded phase stops at Validate; Launch drafting runs from the approved Discover option.
+Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phases 3 and 4 are stubbed, a project that passes Validate stays recorded at Build while Launch drafting runs. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
 
 ## Architecture
 
@@ -79,6 +80,6 @@ About $0.00 per run (local open-weight model, no paid API). Every entry in `deci
 ## How the project stays alive after the hackathon
 
 - **Maintainers:** the Foundry team maintains the repository under Apache-2.0 and reviews contributions.
-- **Roadmap:** agents for the phases that are still `STUBBED` (Validate, Build, Commercial setup, Operate), a stronger guardrail model and wider evals, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Roadmap:** agents for the phases that are still `STUBBED` (Build, Commercial setup, Operate), a stronger guardrail model and wider evals, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Community:** contributed agents, prompts (`prompts/`) and guardrail evals (`evals/`). The guardrail evals are public so anyone can check the safety rules.
 - **Funding (`ASSUMPTION`, not yet validated):** the core stays free and self-hosted. Possible income is a hosted version for founders who do not want to run a model, and licences and support for incubators and university venture programmes. Safety rules and core features are never paywalled.

@@ -164,11 +164,14 @@ def test_orchestrator_full_six_phase_lifecycle_and_gates(tmp_path: Path) -> None
         source_url="https://www.notion.so/product/notion-for-education",
         quote="free for students and educators with a school email address",
     )
-    # 1 fact + 0 signals = 1 < 3 -> still blocked
+    # A sourced fact is not demand: 0 signals < 3 -> still blocked
     with pytest.raises(OrchestratorError, match="Evidence target not yet reached"):
         orch.decide_gate(proj.id, GateOutcome.ADVANCE, founder_approved=True)
 
     orch.record_demand_signals(proj.id, 2, note="2 student pre-order interview opt-ins", evidence_ids=[fact.id])
+    with pytest.raises(OrchestratorError, match="Evidence target not yet reached"):
+        orch.decide_gate(proj.id, GateOutcome.ADVANCE, founder_approved=True)
+    orch.record_demand_signals(proj.id, 1, note="1 more opt-in")
     proj = orch.decide_gate(
         proj.id, GateOutcome.ADVANCE, founder_approved=True, evidence_ids=[fact.id]
     )

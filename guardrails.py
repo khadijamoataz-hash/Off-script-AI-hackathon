@@ -690,6 +690,12 @@ class PolicyEngine:
 
         # Also inspect serialized arguments against all text rules (e.g., card numbers, impersonation, fake reviews)
         serialized_args = " ".join(f"{k}={v}" for k, v in sorted(args.items()))
+        if normalized_tool in EXTERNAL_EXECUTION_TOOLS:
+            # Exporting an approved item: its content is a draft that already passed the full
+            # draft check (with the model) before it was queued, and the token binds that exact
+            # content. Check it again as a draft, without a second model call.
+            ctx = ctx.model_copy(update={"surface": "agent_output"})
+            return self.evaluate_text(serialized_args, context=ctx, use_classifier=False)
         # Internal tools act on text that was already screened as a founder request, so their
         # arguments get the secrets and keyword checks only (no model call per tool call).
         return self.evaluate_text(

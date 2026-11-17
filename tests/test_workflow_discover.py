@@ -128,6 +128,11 @@ def test_discover_runs_to_gates_and_only_verified_quotes_are_sourced(tmp_path: P
     assert state["awaiting"] == "phase_gate"
     assert "pending" in (tmp_path / "outputs" / "phase1_gate_decision.md").read_text()
 
+    with pytest.raises(WorkflowError, match="demand target"):
+        wf.decide_step(pid, "continue")
+    wf.set_validate_target(pid, 20, "waitlist sign-ups")
+    with pytest.raises(WorkflowError, match="cannot be changed"):
+        wf.set_validate_target(pid, 1, "waitlist sign-ups")
     wf.decide_step(pid, "continue")
     assert wf.orch.get_project(pid).current_phase == PhaseName.VALIDATE
     assert "**Founder decision:** CONTINUE" in (tmp_path / "outputs" / "phase1_gate_decision.md").read_text()
@@ -185,6 +190,89 @@ def test_critic_schema_rejects_agreement_without_risks() -> None:
         CriticOutput(**weak)
 
 
+def _box(text: str, source: int | None = None, quote: str | None = None) -> dict:
+    return {"text": text, "source_number": source, "quote": quote}
+
+
+STRATEGY = {
+    "canvas": {
+        "problem": _box("Designers lose hours chasing late invoices.", 1,
+                        "Freelance designers report spending five hours a month chasing late invoices."),
+        "customer_segments": _box("Freelance designers in Egypt who invoice monthly."),
+        "unique_value_proposition": _box("Polite reminders without writing each one."),
+        "solution": _box("A reminder schedule and editable templates."),
+        "channels": _box("Design communities and LinkedIn groups."),
+        "revenue_streams": _box("A small monthly subscription, to be tested."),
+        "cost_structure": _box("Hosting and the founder's time."),
+        "key_metrics": _box("Waitlist sign-ups from real designers."),
+        "unfair_advantage": _box("None yet."),
+    },
+    "riskiest_assumption": "Designers will pay for reminders instead of using free templates.",
+    "test_plan": "Share the page in two design groups for 14 days; one sign-up from a designer counts.",
+    "landing": {"headline": "Invoice reminders for freelance designers",
+                "subheadline": "Send polite reminders without writing each one by hand.",
+                "points": ["Late invoices cost designers hours.", "Set a reminder schedule once.",
+                           "Edit every message before it goes out."],
+                "who_it_is_for": "Freelance designers who invoice clients every month.",
+                "cta_label": "Join the waitlist"},
+    "invite_post": "I am exploring a small tool that sends polite invoice reminders for freelance designers. If you invoice clients every month, I would like you to look at the page and tell me if it fits.",
+}
+
+
+def _discover_approved(wf: Workflow, target: int = 20) -> str:
+    pid = wf.start_project(BRIEF).id
+    wf.run_discover_step1(pid); wf.decide_step(pid, "continue")
+    wf.run_discover_step2(pid)
+    wf.set_validate_target(pid, target, "waitlist sign-ups")
+    wf.decide_step(pid, "continue")
+    return pid
+
+
+def test_validate_recommends_stop_on_weak_demand_and_cannot_be_pushed_past(tmp_path: Path) -> None:
+    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY])
+    pid = _discover_approved(wf, target=100)
+    with pytest.raises(WorkflowError, match="passed Validate gate"):
+        wf.run_launch_drafts(pid)
+
+    wf.run_validate_step1(pid)
+    out = tmp_path / "outputs"
+    canvas = (out / "phase2_step1_lean_canvas.md").read_text()
+    assert canvas.count("| `ASSUMPTION` |") == 8 and "Sourced" in canvas and "100 waitlist sign-ups" in canvas
+    page = (out / "phase2_step2_landing_page.html").read_text()
+    assert "[Real customer quote - collect after launch]" in page and "[YOUR-FORM-URL]" in page
+    actions = wf.validate_actions(pid)
+    assert {a.action_type.value for a in actions} == {"deploy", "post"}
+    assert all(a.status.value == "pending" for a in actions)
+    assert "pending" in (out / "phase2_gate_decision.md").read_text()
+
+    with pytest.raises(WorkflowError, match="real people"):
+        wf.record_validate_results(pid, 12, "waitlist sign-ups", confirmed_real=False)
+    with pytest.raises(WorkflowError, match="Record the real results"):
+        wf.decide_validate(pid, "continue")
+    wf.record_validate_results(pid, 12, "waitlist sign-ups", "shared in two groups", confirmed_real=True)
+    check = wf.validate_check(pid)
+    assert check.recommendation.value == "stop" and "12 of the 100" in check.recommendation_reason
+    gate = (out / "phase2_gate_decision.md").read_text()
+    assert "System recommendation: STOP" in gate and "| 12 |" in gate
+
+    with pytest.raises(WorkflowError, match="not met"):
+        wf.decide_validate(pid, "continue")
+    assert any(e.action == "validate_gate" and e.outcome == "blocked" for e in log.read_all())
+    wf.decide_validate(pid, "stop")
+    assert wf.orch.get_project(pid).status == ProjectStatus.STOPPED
+    assert "**Founder decision:** STOP" in (out / "phase2_gate_decision.md").read_text()
+    assert log.verify().valid
+
+
+def test_validate_go_back_returns_to_the_discover_decision(tmp_path: Path) -> None:
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY])
+    pid = _discover_approved(wf)
+    wf.run_validate_step1(pid)
+    state = wf.decide_validate(pid, "go_back")
+    assert state["awaiting"] == "phase_gate" and not state["discover_approved"]
+    assert wf.orch.get_project(pid).current_phase == PhaseName.DISCOVER
+
+
 LAUNCH = {
     "store_page": {
         "headline": "Invoice reminders for freelance designers",
@@ -203,14 +291,12 @@ LAUNCH = {
 
 
 def test_launch_drafts_need_approval_of_the_exact_text(tmp_path: Path) -> None:
-    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, LAUNCH])
-    pid = wf.start_project(BRIEF).id
-    wf.run_discover_step1(pid)
-    with pytest.raises(WorkflowError, match="approved"):
-        wf.run_launch_drafts(pid)                       # Discover not approved yet
-    wf.decide_step(pid, "continue")
-    wf.run_discover_step2(pid)
-    wf.decide_step(pid, "continue")
+    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, LAUNCH])
+    pid = _discover_approved(wf, target=5)
+    wf.run_validate_step1(pid)
+    wf.record_validate_results(pid, 6, "waitlist sign-ups", confirmed_real=True)
+    assert wf.validate_check(pid).recommendation.value == "advance"
+    wf.decide_validate(pid, "continue")
 
     wf.run_launch_drafts(pid)
     out = tmp_path / "outputs"
@@ -263,11 +349,12 @@ def test_unsafe_draft_is_blocked_before_the_approval_queue(tmp_path: Path) -> No
             category=PolicyCategory.FAKE_SOCIAL_PROOF if bad else PolicyCategory.CLEAN,
         )
 
-    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, LAUNCH])
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, LAUNCH])
     wf.engine.classifier = classifier
-    pid = wf.start_project(BRIEF).id
-    wf.run_discover_step1(pid); wf.decide_step(pid, "continue")
-    wf.run_discover_step2(pid); wf.decide_step(pid, "continue")
+    pid = _discover_approved(wf, target=1)
+    wf.run_validate_step1(pid)
+    wf.record_validate_results(pid, 1, "waitlist sign-ups", confirmed_real=True)
+    wf.decide_validate(pid, "continue")
     state = wf.run_launch_drafts(pid)
     assert len(state["launch_blocked"]) == 1 and len(wf.launch_actions(pid)) == 2
 
