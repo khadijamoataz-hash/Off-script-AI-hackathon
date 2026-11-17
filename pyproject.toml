@@ -28,7 +28,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["app", "approval", "decision_log", "delivery", "evidence", "gates", "guardrails", "llm", "orchestrator", "tools", "workflow"]
+py-modules = ["app", "approval", "decision_log", "delivery", "evidence", "gates", "guardrails", "llm", "orchestrator", "tools", "ui", "workflow"]
 packages = ["agents", "evals"]
 
 [tool.pytest.ini_options]

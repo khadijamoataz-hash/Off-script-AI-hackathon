@@ -6,11 +6,11 @@
 - `/status`: live checks (model, search, decision log, guardrail evals) and the status table.
 
 Working: brief intake and Phase 1 (Discover). Later phases are STUBBED and labelled so.
+Page layout, styles and result views live in `ui.py`; this file holds the routes.
 """
 
 from __future__ import annotations
 
-import html
 import os
 from pathlib import Path
 from typing import Any
@@ -18,20 +18,24 @@ from typing import Any
 import threading
 from urllib.parse import quote
 
-import markdown as markdown_lib
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import ui
 from agents.intake import FounderBrief
 from approval import OutboxError
+from evidence import ClaimType
 from guardrails import PolicyContext, PolicyViolationError
-from orchestrator import Orchestrator, OrchestratorError
+from orchestrator import Orchestrator, OrchestratorError, ProjectRecord
 from tools import search_status
 from workflow import STEP_CHOICES, Workflow, WorkflowError, outputs_dir
 
 from decision_log import DecisionLog
-from llm import LLMAdapter
+from llm import LLMAdapter, LLMConfig
 from evals.redteam import run_redteam_suite
 
 ROOT = Path(__file__).resolve().parent
@@ -59,6 +63,7 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
 ]
 
 app = FastAPI(title="Foundry", version="0.1.0")
+e = ui.esc
 
 
 def _verify(path: Path) -> dict[str, Any]:
@@ -113,37 +118,90 @@ def api_status() -> dict[str, Any]:
     return collect_status()
 
 
+# ---------------------------------------------------------------------- shared page helpers
+
+
+def _page(title: str, body: str, *, refresh: int | None = None, model_ready: bool | None = None) -> str:
+    """Every founder page shows the configured model in the header (read from settings, no network call)."""
+    return ui.page(title, body, refresh=refresh, model=LLMConfig().model, model_ready=model_ready)
+
+
+def _wants_html(request: Request) -> bool:
+    return not request.url.path.startswith(("/api", "/healthz"))
+
+
+def _error_page(request: Request, status: int, detail: Any) -> HTMLResponse:
+    titles = {
+        404: "We could not find that page",
+        409: "That action is not available right now",
+        422: "Please check what you entered",
+    }
+    if isinstance(detail, list):
+        names = {"idea": "Your idea", "target_market": "Who is it for", "skills": "Your skills", "budget": "Budget",
+                 "time_available": "Time you have", "values": "Your values", "source_urls": "Source URLs"}
+        lines = []
+        for err in detail:
+            loc = [str(part) for part in err.get("loc", []) if part not in ("body", "query", "path")]
+            field = names.get(loc[0], loc[0]) if loc else "Form"
+            lines.append(f"<li><strong>{e(field)}:</strong> {e(err.get('msg', 'invalid value'))}</li>")
+        body = f'<ul class="points">{"".join(lines)}</ul>'
+    else:
+        body = f"<p>{e(detail)}</p>"
+    parts = request.url.path.split("/")
+    back = (f'<a class="btn btn-primary" href="/projects/{e(parts[2])}">Back to your project</a>'
+            if len(parts) > 2 and parts[1] == "projects" and parts[2] else "")
+    content = (
+        f'<section class="decision warn" style="max-width:720px;margin:40px auto 0"><p class="kicker">Error {status}</p>'
+        f'<h2>{e(titles.get(status, "Something went wrong"))}</h2><div style="margin-top:14px">{body}</div>'
+        f'<div class="row" style="margin-top:22px">{back}<a class="btn" href="/">Go to the home page</a></div></section>'
+    )
+    return HTMLResponse(_page(titles.get(status, "Error"), content), status_code=status)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error(request: Request, exc: StarletteHTTPException):
+    if not _wants_html(request):
+        return await http_exception_handler(request, exc)
+    return _error_page(request, exc.status_code, exc.detail)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError):
+    if not _wants_html(request):
+        return await request_validation_exception_handler(request, exc)
+    return _error_page(request, 422, list(exc.errors()))
+
+
+# ---------------------------------------------------------------------- status page
+
+
 def _badge(ok: bool | None, yes: str, no: str, unknown: str = "n/a") -> str:
     if ok is None:
-        return f'<span class="b grey">{html.escape(unknown)}</span>'
-    return f'<span class="b {"green" if ok else "red"}">{html.escape(yes if ok else no)}</span>'
+        return ui.pill(unknown, "muted")
+    return ui.pill(yes if ok else no, "purple" if ok else "orange")
 
 
 @app.get("/status", response_class=HTMLResponse)
 def status_page() -> str:
     st = collect_status()
     llm = st["llm"]
-    e = html.escape
 
     if llm["is_mock"]:
-        llm_line = '<span class="b red">MOCKED: offline test provider, not a real model</span>'
+        llm_line = ui.pill("MOCKED: offline test provider, not a real model", "orange")
     elif not llm["ollama_reachable"]:
-        llm_line = '<span class="b red">Ollama not reachable - model calls will fail (no mock fallback)</span>'
+        llm_line = ui.pill("Ollama not reachable - model calls will fail (no mock fallback)", "orange")
     elif not llm["model_downloaded"]:
-        llm_line = '<span class="b amber">Model still downloading - model calls will fail until it finishes</span>'
+        llm_line = ui.pill("Model still downloading - model calls will fail until it finishes", "orange")
     else:
-        llm_line = '<span class="b green">Real local model ready</span>'
+        llm_line = ui.pill("Real local model ready", "solid")
 
-    log_rows = ""
-    for label, info in (("decision_log.json", st["decision_log"]),):
-        state = _badge(info["valid"], "VALID", "INVALID", "not created yet")
-        errs = "<br>".join(e(x) for x in info["errors"])
-        log_rows += (
-            f"<tr><td>{e(label)}</td><td>{state}</td><td>{info['entries']}</td>"
-            f"<td><code>{e(info['head'][:16])}</code></td><td><code>{e(info['path'])}</code>"
-            f"{'<br>' + errs if errs else ''}</td></tr>"
-        )
-
+    info = st["decision_log"]
+    errs = "<br>".join(e(x) for x in info["errors"])
+    log_rows = (
+        f"<tr><td>decision_log.json</td><td>{_badge(info['valid'], 'VALID', 'INVALID', 'not created yet')}</td>"
+        f"<td>{info['entries']}</td><td><code>{e(info['head'][:16])}</code></td><td><code>{e(info['path'])}</code>"
+        f"{'<br>' + errs if errs else ''}</td></tr>"
+    )
     rt = st["redteam"]
     rt_rows = "".join(
         f"<tr><td><code>{e(c['case_id'])}</code></td><td>{e(c['name'])}</td><td>{e(c['prompt'])}</td>"
@@ -151,80 +209,41 @@ def status_page() -> str:
         f"<td><code>{e(c['rule_id'] or '')}</code></td><td>{_badge(c['passed'], 'PASS', 'FAIL')}</td></tr>"
         for c in rt["cases"]
     )
-    colour = {"Working": "green", "STUBBED": "amber", "MOCKED": "amber", "None": "grey"}
+    tone = {"Working": "purple", "STUBBED": "orange", "MOCKED": "orange", "None": "muted"}
     caps = "".join(
-        f"<tr><td>{e(p)}</td><td><span class=\"b {colour[s]}\">{e(s)}</span></td><td>{e(w)}</td></tr>"
-        for p, s, w in STATUS_ROWS
+        f"<tr><td>{e(p)}</td><td>{ui.pill(s, tone[s])}</td><td>{e(w)}</td></tr>" for p, s, w in STATUS_ROWS
     )
+    search_ok = st["search"]["reachable"]
+    body = (
+        '<p class="kicker">System status</p><h1>Foundry status</h1>'
+        '<div class="notice" style="margin-top:16px"><span class="icon orange">i</span><p>Everything on this page is '
+        "computed live. Parts marked <strong>STUBBED</strong> are designed but not built; parts marked "
+        "<strong>MOCKED</strong> are simulated.</p></div>"
+        '<div class="tiles" style="grid-template-columns:repeat(3,1fr)">'
+        f'<div class="tile"><p class="label">Local model</p><div class="v" style="font-size:20px">{e(llm["configured_model"])}</div>'
+        f"<p>{llm_line}</p><p class=\"small muted\" style=\"margin-top:8px\">Provider <code>{e(llm['active_provider'])}</code>, "
+        f"Ollama at <code>{e(llm['ollama_url'])}</code></p></div>"
+        f'<div class="tile"><p class="label">Web search</p><div class="v" style="font-size:20px">SearXNG</div>'
+        f"<p>{_badge(search_ok, 'SearXNG reachable', 'SearXNG not reachable - research uses pasted URLs only')}</p>"
+        f'<p class="small muted" style="margin-top:8px"><code>{e(st["search"]["searxng_url"])}</code></p></div>'
+        f'<div class="tile"><p class="label">Guardrail evals, rules only</p><div class="v" style="font-size:20px">'
+        f"{rt['passed']}/{rt['total']} passed</div><p>{_badge(rt['passed'] == rt['total'], 'ALL PASS', 'FAILURES')}</p></div>"
+        "</div>"
+        '<section class="block"><div class="block-head"><h2>Decision log (required keys and hash chain verified now)</h2></div>'
+        '<div class="table-wrap"><table><tr><th>Log</th><th>Status</th><th>Entries</th><th>Head hash</th><th>Path</th></tr>'
+        f"{log_rows}</table></div></section>"
+        f'<section class="block"><div class="block-head"><h2>Guardrail evals, rules only (run now): {rt["passed"]}/{rt["total"]} passed</h2></div>'
+        '<p class="muted">These run without the model: the keyword backstop, secrets detector and tool allowlist. Rewordings and '
+        "other languages are checked by the model classifier; see <code>evals/results.md</code> for the full run.</p>"
+        '<div class="table-wrap" style="margin-top:12px"><table><tr><th>Case</th><th>What it tries</th><th>Text</th><th>Expected</th>'
+        f"<th>Blocked</th><th>Rule</th><th>Result</th></tr>{rt_rows}</table></div></section>"
+        '<section class="block"><div class="block-head"><h2>What works and what is mocked</h2></div>'
+        f'<div class="table-wrap"><table><tr><th>Part</th><th>Status</th><th>Where</th></tr>{caps}</table></div></section>'
+    )
+    return _page("Status", body, model_ready=bool(llm["ready"]))
 
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Foundry status</title>
-<style>
-html{{color-scheme:light;background:#f6f7f9}}body{{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:1rem 1.5rem;color:#1a1a1a;background:#fff;border-radius:.6rem}}
-table{{border-collapse:collapse;width:100%;margin:.5rem 0 1.5rem}}td,th{{border:1px solid #ddd;padding:.4rem .5rem;text-align:left;vertical-align:top;font-size:.9rem}}
-th{{background:#f5f5f5}}.b{{padding:.1rem .5rem;border-radius:.6rem;font-size:.85rem;font-weight:600;color:#fff}}
-.green{{background:#1a7f37}}.red{{background:#c62828}}.amber{{background:#b26a00}}.grey{{background:#666}}
-.stub{{border:2px dashed #b26a00;padding:.6rem 1rem;background:#fff8e6}}pre{{background:#f5f5f5;padding:1rem;overflow:auto;font-size:.8rem}}
-</style></head><body>
-<p><a href="/">Back to projects</a></p>
-<h1>Foundry status</h1>
-<p class="stub">Everything on this page is computed live. Parts marked <strong>STUBBED</strong> are designed
-but not built; parts marked <strong>MOCKED</strong> are simulated.</p>
-<h2>Local model</h2>
-<p>{llm_line}</p>
-<p>Web search: {_badge(st['search']['reachable'], 'SearXNG reachable', 'SearXNG not reachable - research uses pasted URLs only')}
-<code>{e(str(st['search']['searxng_url']))}</code></p>
-<p>Provider <code>{e(str(llm['active_provider']))}</code>, model <code>{e(str(llm['configured_model']))}</code>,
-Ollama at <code>{e(str(llm['ollama_url']))}</code></p>
-<h2>Decision log (required keys and hash chain verified now)</h2>
-<table><tr><th>Log</th><th>Status</th><th>Entries</th><th>Head hash</th><th>Path</th></tr>{log_rows}</table>
-<h2>Guardrail evals, rules only (run now): {rt['passed']}/{rt['total']} passed</h2>
-<p>These run without the model: the keyword backstop, secrets detector and tool allowlist. Rewordings and
-other languages are checked by the model classifier; see <code>evals/results.md</code> for the full run.</p>
-<table><tr><th>Case</th><th>What it tries</th><th>Text</th><th>Expected</th><th>Blocked</th><th>Rule</th><th>Result</th></tr>{rt_rows}</table>
-<h2>What works and what is mocked</h2>
-<table><tr><th>Part</th><th>Status</th><th>Where</th></tr>{caps}</table>
-</body></html>"""
 
-
-# ---------------------------------------------------------------------- founder pages
-
-PAGE_CSS = """
-:root{color-scheme:light;--ink:#16181d;--muted:#5b6270;--line:#e2e5ea;--bg:#f6f7f9;--card:#fff;--accent:#2f4fd8;--accent-soft:#eef1fe;--ok:#177a3a;--warn:#b45309;--bad:#c0392b}
-*{box-sizing:border-box}html{background:var(--bg)}
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;max-width:900px;margin:0 auto;padding:0 1rem 4rem;color:var(--ink);background:var(--bg);line-height:1.5}
-a{color:var(--accent)}h1{font-size:1.7rem;margin:.2rem 0 .4rem;line-height:1.25}h2{font-size:1.15rem;margin:1.2rem 0 .5rem}
-header.top{display:flex;align-items:center;gap:1rem;padding:1rem 0;margin-bottom:.5rem}
-header.top .brand{font-weight:700;font-size:1.15rem;color:var(--ink);text-decoration:none;margin-right:auto}
-header.top a.nav{color:var(--muted);text-decoration:none;font-size:.92rem}
-.btn,button{font:inherit;font-weight:600;padding:.55rem 1rem;border-radius:.5rem;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;text-decoration:none;display:inline-block}
-.btn.primary,button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-button.stop{background:#fff;color:var(--bad);border-color:#e6b8b2}
-.card{background:var(--card);border:1px solid var(--line);border-radius:.8rem;padding:1.1rem 1.3rem;margin:1rem 0;box-shadow:0 1px 2px rgba(20,24,40,.04)}
-.card.gate{border:2px solid var(--accent);background:var(--accent-soft)}.card.warn{border:1px solid #e6b8b2;background:#fdf1ef}
-.card.stub{border:1px dashed #d9a441;background:#fff9ec;color:#5c4307;font-size:.93rem}
-.lead{color:var(--muted);font-size:1.02rem;margin:.2rem 0 1rem}.muted{color:var(--muted);font-size:.9rem}
-label{display:block;font-weight:600;margin-top:.9rem;font-size:.95rem}label span{font-weight:400;color:var(--muted)}
-input[type=text],textarea{width:100%;padding:.6rem .7rem;font:inherit;color:var(--ink);background:#fff;border:1px solid #cfd4dc;border-radius:.5rem;margin-top:.25rem}
-input[type=text]:focus,textarea:focus{outline:2px solid var(--accent);border-color:var(--accent)}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 1rem}@media(max-width:640px){.grid2{grid-template-columns:1fr}}
-.pill{display:inline-block;padding:.12rem .6rem;border-radius:1rem;font-size:.8rem;font-weight:700;color:#fff;vertical-align:middle}
-.pill.green{background:var(--ok)}.pill.red{background:var(--bad)}.pill.amber{background:var(--warn)}.pill.grey{background:#7a8190}.pill.blue{background:var(--accent)}
-.steps{display:flex;flex-wrap:wrap;gap:.4rem;margin:.8rem 0 1.2rem;padding:0;list-style:none}
-.steps li{font-size:.82rem;padding:.3rem .65rem;border-radius:1rem;border:1px solid var(--line);background:var(--card);color:var(--muted)}
-.steps li.done{background:#e8f5ec;border-color:#bfe1c9;color:var(--ok)}.steps li.now{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
-.steps li.stub{border-style:dashed;opacity:.75}
-.choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.6rem;margin:.8rem 0}
-.choices button{text-align:left;padding:.7rem .9rem;height:100%;width:100%}.choices button small{display:block;font-weight:400;color:var(--muted);margin-top:.15rem}
-.choices button.primary small{color:#dfe5ff}.choices .rec{outline:3px solid #f2c037;outline-offset:1px}
-.doc{font-size:.95rem}.doc h1{font-size:1.25rem}.doc h2{font-size:1.05rem;border-top:1px solid var(--line);padding-top:.8rem}.doc h3{font-size:.98rem}
-table{border-collapse:collapse;width:100%;margin:.5rem 0 1rem;font-size:.88rem}td,th{border:1px solid var(--line);padding:.4rem .5rem;text-align:left;vertical-align:top}th{background:#f1f3f6}
-pre.draft{white-space:pre-wrap;background:#f6f7f9;border:1px solid var(--line);border-radius:.5rem;padding:.8rem;font:inherit;font-size:.95rem}
-code{font-size:.85em;background:#f1f3f6;padding:.05rem .3rem;border-radius:.25rem;word-break:break-all}
-details summary{cursor:pointer;font-weight:600}.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.6rem}
-.spinner{width:1.1rem;height:1.1rem;border:3px solid #cfd6f7;border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:spin 1s linear infinite;vertical-align:middle;margin-right:.5rem}
-@keyframes spin{to{transform:rotate(360deg)}}
-"""
+# ---------------------------------------------------------------------- workflow plumbing
 
 _workflow: Workflow | None = None
 _workflow_lock = threading.Lock()
@@ -240,22 +259,9 @@ def get_workflow() -> Workflow:
         return _workflow
 
 
-def _page(title: str, body: str, *, refresh: int | None = None) -> str:
-    meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        f'<meta name="viewport" content="width=device-width, initial-scale=1">{meta}'
-        f"<title>{html.escape(title)}</title><style>{PAGE_CSS}</style></head><body>"
-        '<header class="top"><a class="brand" href="/">Foundry</a>'
-        '<a class="nav" href="/#projects">Projects</a><a class="nav" href="/status">Status and what is mocked</a>'
-        '<a class="btn primary" href="/#new">New brief</a></header>'
-        f"{body}</body></html>"
-    )
-
-
 def render_markdown(text: str) -> str:
     """Model output is escaped first, so it can never inject HTML into the page."""
-    return markdown_lib.markdown(html.escape(text, quote=False), extensions=["tables"])
+    return ui.doc_html(text)
 
 
 def _start_step(project_id: str, step: str) -> None:
@@ -303,37 +309,8 @@ def parse_reply(text: str) -> str | None:
     }.get(cleaned)
 
 
-def _brief_form(brief: dict[str, Any] | None = None, action: str = "/projects", submit: str = "Start") -> str:
-    b = brief or {}
-    e = html.escape
-
-    def field(name: str, label: str, hint: str, rows: int = 1, required: bool = False) -> str:
-        value = e(str(b.get(name, "")))
-        req = " required minlength=\"10\"" if required else ""
-        note = "" if required else " <span>(optional)</span>"
-        control = (
-            f'<textarea name="{name}" rows="{rows}" placeholder="{e(hint)}"{req}>{value}</textarea>'
-            if rows > 1 else f'<input type="text" name="{name}" value="{value}" placeholder="{e(hint)}">'
-        )
-        return f"<div><label>{e(label)}{note}</label>{control}</div>"
-
-    urls = e("\n".join(b.get("source_urls", [])))
-    return (
-        f'<form method="post" action="{action}">'
-        + field("idea", "Your idea", "What digital product do you want to build, and for whom? One or two sentences is enough.", 3, True)
-        + '<div class="grid2">'
-        + field("target_market", "Who is it for", "For example: freelance designers in Egypt")
-        + field("skills", "Your skills", "For example: Python, design, teaching")
-        + field("budget", "Budget", "For example: $100")
-        + field("time_available", "Time you have", "For example: 10 hours a week for 2 months")
-        + "</div>"
-        + field("values", "Your values", "What you will and will not do, for example: honest marketing")
-        + '<details style="margin-top:.9rem"><summary>Add pages you want the agents to read</summary>'
-        '<label>Source URLs <span>(one per line, up to 5)</span></label>'
-        f'<textarea name="source_urls" rows="2" placeholder="https://...">{urls}</textarea></details>'
-        f'<div class="row"><button class="primary" type="submit">{e(submit)}</button>'
-        '<span class="muted">Takes about 2 minutes. You decide at every step.</span></div></form>'
-    )
+def _brief_form(brief: dict[str, Any] | None = None, action: str = "/projects", submit: str = "Challenge my idea") -> str:
+    return ui.brief_form(brief, action, submit)
 
 
 def _brief_from_form(idea, skills, budget, time_available, target_market, values, source_urls) -> FounderBrief:
@@ -345,39 +322,72 @@ def _brief_from_form(idea, skills, budget, time_available, target_market, values
     )
 
 
+# ---------------------------------------------------------------------- landing page
+
+
+def _stage_tone(label: str) -> str:
+    lowered = label.lower()
+    if "decision" in lowered or "revised brief" in lowered:
+        return "solid"
+    if lowered.startswith("rejected") or "not supported" in lowered or "failed" in lowered:
+        return "orange"
+    if "stopped" in lowered:
+        return "muted"
+    return "purple"
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     wf = get_workflow()
     llm = LLMAdapter().runtime_status()
-    e = html.escape
     if llm["is_mock"]:
-        model = '<div class="card warn"><strong>MOCKED:</strong> the offline test provider is active, not a real model.</div>'
+        model = ui.alert("MOCKED: the offline test provider is active, not a real model.", "")
     elif not llm["ready"]:
-        model = ('<div class="card warn">The local model is not ready yet (still downloading, or Ollama is not '
-                 'reachable). Steps will fail until it is. See <a href="/status">Status</a>.</div>')
+        model = ui.alert("The local model is not ready yet",
+                         "<p>It is still downloading, or Ollama is not reachable. Steps will fail until it is. "
+                         'See <a href="/status">System status</a>.</p>')
     else:
-        model = (f'<p class="muted"><span class="pill green">Ready</span> Runs on your machine with the open model '
-                 f'<code>{e(str(llm["configured_model"]))}</code>. No account, no cost.</p>')
-    rows = "".join(
-        f'<tr><td><a href="/projects/{e(p.id)}">{e(p.name)}</a></td>'
-        f"<td>{e(_stage_label(wf.get_state(p.id), p.status.value))}</td></tr>"
+        model = ""
+    cards = "".join(
+        f'<a class="proj" href="/projects/{e(p.id)}"><strong>{e(p.name)}</strong>'
+        f'<span>{ui.pill(label, _stage_tone(label))}</span><span class="id">{e(p.id)}</span></a>'
         for p in wf.orch.list_projects()
+        for label in [_stage_label(wf.get_state(p.id), p.status.value)]
     )
     projects = (
-        f'<h2 id="projects">Your projects</h2><div class="card"><table><tr><th>Idea</th><th>Where it stands</th></tr>{rows}</table></div>'
-        if rows else ""
+        '<div class="section-head" id="projects"><div><p class="kicker">Your work</p><h2>Your projects</h2></div></div>'
+        f'<div class="proj-list">{cards}</div>'
+        if cards else ""
+    )
+    ready = (f'<span class="eyebrow"><span class="dot"></span>Your AI co-founder &middot; running locally on '
+             f'<strong>{e(llm["configured_model"])}</strong></span>' if llm["ready"] and not llm["is_mock"]
+             else '<span class="eyebrow">Your AI co-founder, running on your machine</span>')
+    how = "".join(
+        f'<div class="step"><div class="n">{n}</div><h3>{e(t)}</h3><p>{e(d)}</p></div>'
+        for n, t, d in (
+            (1, "Screen and research", "Checks the product type, searches the web and reads real pages."),
+            (2, "Score the options", "Sharpens your idea and scores it against two alternatives on the same four criteria."),
+            (3, "Argue against it", "A critic lists the risks, kill criteria and the cheapest test that could prove it wrong."),
+            (4, "You decide", "Continue, repeat, go back or stop. Nothing is published without your approval."),
+        )
     )
     body = (
-        "<h1>From a rough idea to an honest go or no-go</h1>"
-        '<p class="lead">Describe your idea. A team of AI agents researches it with real sources, argues against it, '
-        "and tells you plainly when the evidence says stop. Nothing moves forward, and nothing is published, without you.</p>"
-        f'{model}<div class="card" id="new"><h2 style="margin-top:0">Tell us about your idea</h2>{_brief_form(submit="Research my idea")}</div>'
-        '<div class="card stub"><strong>What this prototype does.</strong> Working: Discover (research, critic review, '
-        "interview script) and Launch drafts with your approval. <strong>STUBBED</strong> (designed, not built): Validate, "
-        "Build, Commercial setup, Operate. Delivery is <strong>MOCKED</strong>. There are no payments.</div>"
+        f'<section class="hero">{ready}'
+        '<h1>Built to challenge your idea, <span class="hl">not flatter it.</span></h1>'
+        '<p class="lead">Foundry researches your idea against real, fetched sources, scores it next to sharper '
+        "alternatives and has a critic argue against it. When the evidence is weak, it says stop. "
+        "You make every decision.</p></section>"
+        f'{model}<section class="composer" id="new"><h2>Tell us about your idea</h2>'
+        '<p class="sub">Start with one or two sentences. The more context you add, the sharper the critique.</p>'
+        f"{_brief_form()}</section>"
+        f'<section class="how" aria-label="How Foundry works">{how}</section>'
         f"{projects}"
+        '<div class="notice" style="margin-top:40px"><span class="icon orange">i</span><p><strong>What this prototype does.</strong> '
+        "Working: Discover (research, critic review, interview script) and Launch drafts with your approval. "
+        "<strong>STUBBED</strong> (designed, not built): Validate, Build, Commercial setup, Operate. "
+        "Delivery is <strong>MOCKED</strong>. There are no payments.</p></div>"
     )
-    return _page("Foundry", body)
+    return _page("Challenge your idea", body, model_ready=bool(llm["ready"]))
 
 
 def _stage_label(state: dict[str, Any], status: str) -> str:
@@ -416,10 +426,14 @@ def create_project(
         project = get_workflow().start_project(brief)
     except WorkflowError as exc:
         return HTMLResponse(_page("Brief refused", (
-            f'<div class="box warn"><h2>This brief was not saved</h2><p>{html.escape(str(exc))}</p></div>'
-            '<p><a href="/">Back</a></p>')), status_code=400)
+            '<div style="max-width:720px;margin:40px auto 0">'
+            + ui.alert("This brief was not saved", f"<p>{e(exc)}</p>")
+            + '<p style="margin-top:18px"><a class="btn" href="/">Back</a></p></div>')), status_code=400)
     _start_step(project.id, "step1")
     return RedirectResponse(f"/projects/{project.id}", status_code=303)
+
+
+# ---------------------------------------------------------------------- project page
 
 
 def _read_output(name: str) -> str:
@@ -427,33 +441,67 @@ def _read_output(name: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-CHOICE_TEXT = {
-    "continue": ("Continue", "Accept this and move to the next step"),
-    "repeat": ("Repeat", "Run this step again for a better result"),
-    "go_back": ("Go back", "Return to the previous step or change the brief"),
-    "stop": ("Stop", "End this project here"),
-}
+def _own_output(project_id: str, name: str) -> str:
+    """The text of an output file only if it was written for this project.
+
+    Output files have fixed names, so a newer project's run replaces them; showing that file
+    on an older project's page would show the wrong project's results."""
+    text = _read_output(name)
+    return text if f"`{project_id}`" in text else ""
+
+
+def _doc(project_id: str, name: str, title: str = "", open_: bool = True) -> str:
+    text = _own_output(project_id, name)
+    if not text:
+        if _read_output(name) and title:
+            return (f'<details class="fold"><summary>{e(title)}</summary><div class="fold-body"><p class="muted">'
+                    f"<code>outputs/{e(name)}</code> now holds a newer project's results, so it is not shown here."
+                    "</p></div></details>")
+        return ""
+    if title:
+        return (f'<details class="fold"{" open" if open_ else ""}><summary>{e(title)}</summary>'
+                f'<div class="fold-body">{render_markdown(text)}</div></details>')
+    return f'<div class="results">{render_markdown(text)}</div>'
+
+
+def _opportunities(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
+    """Step 1 results built from the data the agents saved for this project (the same data the
+    markdown file was written from). Falls back to the markdown file if anything is missing."""
+    fallback = _doc(project.id, "phase1_step1_opportunities.md")
+    artifact = project.phase_artifacts.get("discover") or {}
+    research, critic = artifact.get("research"), artifact.get("critic")
+    if not research or not critic:
+        return fallback
+    try:
+        drafts = research.get("claims") or []
+        stored = wf.ledger.list_claims(project_id=project.id, linked_phase="discover")
+        claims = stored[-len(drafts):] if drafts else []
+        if len(claims) != len(drafts) or any(c.text != d["text"].strip() for c, d in zip(claims, drafts)):
+            return fallback
+        cited = {}
+        for claim in claims:
+            if claim.claim_type == ClaimType.FACT and claim.source_url:
+                page_ = wf.ledger.get_fetch(project_id=project.id, url=claim.source_url)
+                if page_ is not None:
+                    cited[claim.source_url] = page_
+        note = ""
+        for line in _own_output(project.id, "phase1_step1_opportunities.md").splitlines():
+            if line.startswith("Research notes: "):
+                note = line[len("Research notes: "):]
+        return ui.opportunities_view(
+            project_id=project.id, research=research, critic=critic,
+            picked_title=(artifact.get("recommended_option") or {}).get("title", ""),
+            claims=claims, cited_pages=cited, all_pages=wf.ledger.list_fetches(project_id=project.id),
+            recommendation=str(state.get("recommendation", "")), reason=str(state.get("recommendation_reason", "")),
+            search_note=note,
+        )
+    except (KeyError, TypeError, ValueError):
+        return fallback
 
 
 def _choice_buttons(project_id: str, allowed: tuple[str, ...], recommended: str = "",
                     action: str = "decide", typed: bool = True) -> str:
-    buttons = ""
-    for choice in STEP_CHOICES:
-        if choice not in allowed:
-            continue
-        label, hint = CHOICE_TEXT[choice]
-        css = {"continue": "primary", "stop": "stop"}.get(choice, "")
-        rec = " rec" if choice == recommended else ""
-        tag = " (recommended)" if choice == recommended else ""
-        buttons += (f'<button class="{css}{rec}" name="choice" value="{choice}" type="submit">'
-                    f"{label}{tag}<small>{hint}</small></button>")
-    out = f'<form method="post" action="/projects/{project_id}/{action}"><div class="choices">{buttons}</div></form>'
-    if typed:
-        out += (f'<details><summary class="muted">Or type your choice</summary>'
-                f'<form class="row" method="post" action="/projects/{project_id}/decide">'
-                '<input type="text" name="reply" style="max-width:22rem" placeholder="continue, repeat, go back or stop">'
-                '<button type="submit">Send</button></form></details>')
-    return out
+    return ui.choice_buttons(project_id, STEP_CHOICES, allowed, recommended, action, typed)
 
 
 def _stepper(state: dict[str, Any], status: str) -> str:
@@ -471,27 +519,15 @@ def _stepper(state: dict[str, Any], status: str) -> str:
     ]
     if status == "stopped":
         items = [(name, "done" if css == "done" else ("stub" if css == "stub" else "")) for name, css in items]
-    cells = "".join(
-        f'<li class="{css}">{html.escape(name)}{" · STUBBED" if css == "stub" else ""}</li>' for name, css in items
-    )
-    return f'<ol class="steps">{cells}</ol>'
+    return ui.stepper(items)
 
 
-def _recommendation_card(state: dict[str, Any]) -> str:
-    rec = str(state.get("recommendation", ""))
-    colour = {"continue": "green", "repeat": "amber", "stop": "red"}.get(rec, "grey")
-    return (f'<p><span class="pill {colour}">Foundry recommends: {html.escape(rec.upper())}</span></p>'
-            f'<p>{html.escape(str(state.get("recommendation_reason", "")))}</p>')
-
-
-def _doc(name: str, title: str = "", open_: bool = True) -> str:
-    text = _read_output(name)
-    if not text:
-        return ""
-    if title:
-        return (f'<details class="card doc"{" open" if open_ else ""}><summary>{html.escape(title)}</summary>'
-                f"{render_markdown(text)}</details>")
-    return f'<div class="card doc">{render_markdown(text)}</div>'
+def _running_kind(state: dict[str, Any]) -> str:
+    if state.get("discover_approved"):
+        return "launch"
+    if state.get("stage") == "drafting the interview script":
+        return "step2"
+    return "step1"
 
 
 @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -502,141 +538,185 @@ def project_page(project_id: str, unclear: str = "") -> str:
         raise HTTPException(status_code=404, detail="Project not found")
     state = wf.get_state(project_id)
     awaiting = state.get("awaiting")
-    e = html.escape
     usage = state.get("usage") or {}
     tokens = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
     brief = project.brief or {}
     brief_rows = "".join(
-        f"<tr><th>{label}</th><td>{e(str(brief.get(key) or 'not given'))}</td></tr>"
+        f"<tr><th>{label}</th><td>{e(brief.get(key) or 'not given')}</td></tr>"
         for key, label in (("idea", "Idea"), ("target_market", "For"), ("skills", "Skills"),
                            ("budget", "Budget"), ("time_available", "Time"), ("values", "Values"))
     )
+    label = _stage_label(state, project.status.value)
     parts = [
-        f'<p class="muted">Your project</p><h1>{e(project.name)}</h1>',
+        '<a class="back" href="/#projects">&larr; All projects</a>',
+        f'<div class="proj-head"><div><p class="kicker">Your project</p><h1>{e(project.name)}</h1></div>'
+        f"{ui.pill(label, _stage_tone(label))}</div>",
         _stepper(state, project.status.value),
-        f'<details class="card"><summary>Your brief <span class="muted">(what you entered)</span></summary><table>{brief_rows}</table></details>',
+        f'<details class="fold"><summary>Your brief <span class="muted" style="font-weight:500">(what you entered)</span></summary>'
+        f'<div class="fold-body"><table class="brief-table">{brief_rows}</table></div></details>',
     ]
-    footer = f'<p class="muted">Cost so far: $0.00 ({tokens} tokens on the local model). Project id {e(project.id)}.</p>'
-    running = project_id in _running
+    footer = (f'<p class="page-foot"><span>Cost so far: $0.00 ({tokens} tokens on the local model).</span>'
+              f"<span>Project id {e(project.id)}.</span></p>")
+    notices: list[str] = []
     if state.get("error"):
-        parts.append(f'<div class="card warn"><strong>The step failed.</strong> {e(state["error"])}<br>'
-                     "Nothing was made up to cover for it. You can run the step again.</div>")
+        headline, advice = ui.friendly_error(str(state["error"]))
+        notices.append(ui.alert(
+            "The step failed.",
+            f"<p>{e(headline)} {e(advice)} Nothing was made up to cover for it. You can run the step again.</p>"
+            f'<details><summary>Technical details</summary><pre>{e(state["error"])}</pre></details>',
+        ))
     if unclear and state.get("reply_refusal"):
-        parts.append(f'<div class="card warn">{e(state["reply_refusal"])}</div>')
+        notices.append(ui.alert("Foundry will not do this", f'<p>{e(state["reply_refusal"])}</p>'))
     if unclear:
-        parts.append(f'<div class="card warn">Your reply "{e(unclear)}" is not a clear choice, so nothing was done. '
-                     "Please choose one of: continue, repeat, go back, stop.</div>")
-    if running:
+        notices.append(ui.alert(
+            "Please choose one option",
+            f'<p>Your reply "{e(unclear)}" is not a clear choice, so nothing was done. '
+            "Please choose one of: continue, repeat, go back, stop.</p>",
+        ))
+    if notices:
+        parts.append('<div class="stack" style="margin-bottom:16px">' + "".join(notices) + "</div>")
+
+    if project_id in _running:
         stage = state.get("launch_stage") if state.get("discover_approved") else state.get("stage")
-        parts.append(f'<div class="card"><p><span class="spinner"></span><strong>The agents are working: {e(str(stage or "starting"))}</strong></p>'
-                     '<p class="muted">This usually takes one to two minutes. The page updates by itself; you can leave it open.</p></div>')
+        parts.append(ui.working_card(str(stage or "starting"), _running_kind(state)))
         return _page(project.name, "".join(parts) + footer, refresh=3)
 
     rec = str(state.get("recommendation", ""))
     if awaiting == "step1_gate":
-        parts.append('<div class="card gate"><h2 style="margin-top:0">Your decision: the opportunities</h2>'
-                     f"{_recommendation_card(state)}"
-                     '<p class="muted">Read the research below. Foundry recommends; you decide. Nothing continues until you choose.</p>'
-                     f"{_choice_buttons(project_id, STEP_CHOICES, rec)}</div>")
-        parts.append(_doc("phase1_step1_opportunities.md"))
+        parts.append(ui.decision_panel(
+            "Your decision: the opportunities", state,
+            "Read the research below. Foundry recommends; you decide. Nothing continues until you choose.",
+            _choice_buttons(project_id, STEP_CHOICES, rec), kicker="Gate · Discover, step 1",
+        ))
+        parts.append(_opportunities(wf, project, state))
     elif awaiting == "phase_gate":
-        parts.append('<div class="card gate"><h2 style="margin-top:0">Your decision: end of Discover</h2>'
-                     f"{_recommendation_card(state)}"
-                     '<p class="muted">Continue approves the sharpened idea. The interview script below is for you to use with real people.</p>'
-                     f"{_choice_buttons(project_id, STEP_CHOICES, rec)}</div>")
-        parts.append(_doc("phase1_step2_interview_script.md"))
-        parts.append(_doc("phase1_step1_opportunities.md", "Research from step 1", open_=False))
+        parts.append(ui.decision_panel(
+            "Your decision: end of Discover", state,
+            "Continue approves the sharpened idea. The interview script below is for you to use with real people.",
+            _choice_buttons(project_id, STEP_CHOICES, rec), kicker="Gate · End of Discover",
+        ))
+        parts.append(_doc(project_id, "phase1_step2_interview_script.md"))
+        parts.append(_research_fold(wf, project, state))
     elif awaiting == "excluded_gate":
-        parts.append('<div class="card warn"><h2 style="margin-top:0">This product type is not supported</h2>'
-                     f"{_recommendation_card(state)}{_choice_buttons(project_id, ('stop',), typed=False)}"
-                     '<p><a href="/#new">Start a different brief</a></p></div>')
+        parts.append(
+            '<section class="decision warn"><p class="kicker">Not supported</p><h2>This product type is not supported</h2>'
+            f"{ui.recommendation(state)}{_choice_buttons(project_id, ('stop',), typed=False)}"
+            '<p style="margin-top:14px"><a href="/#new">Start a different brief</a></p></section>'
+        )
     elif awaiting in {"run_step1", "run_step2"}:
         step = "step1" if awaiting == "run_step1" else "step2"
-        label = "Run the research" if step == "step1" else "Draft the interview script"
-        parts.append(f'<div class="card"><form method="post" action="/projects/{project_id}/run/{step}">'
-                     f'<button class="primary" type="submit">{label}</button></form></div>')
+        label_ = "Run the research" if step == "step1" else "Draft the interview script"
+        what = ("Foundry will screen your brief, search and read sources, score the options and run the critic."
+                if step == "step1" else "Foundry will draft a Mom Test interview script for the option you approved.")
+        parts.append(
+            f'<section class="decision"><p class="kicker">Next step</p><h2>{e(label_)}</h2><p class="hint">{e(what)}</p>'
+            f'<form method="post" action="/projects/{e(project_id)}/run/{step}" style="margin-top:18px">'
+            f'<button class="btn btn-primary btn-lg" type="submit">{e(label_)} <span class="arrow">&rarr;</span></button></form></section>'
+        )
     elif awaiting == "revise_brief":
         if state.get("refusal"):
-            parts.append(f'<div class="card warn"><h2 style="margin-top:0">Foundry will not do this</h2><p>{e(state["refusal"])}</p>'
-                         '<p class="muted">The refusal is recorded in the decision log. Change the brief below, or stop.</p>'
-                         f"{_choice_buttons(project_id, ('stop',), typed=False)}</div>")
-        parts.append('<div class="card"><h2 style="margin-top:0">Revise your brief</h2>'
-                     + _brief_form(project.brief, f"/projects/{project_id}/brief", "Research again") + "</div>")
+            parts.append(
+                '<section class="decision warn"><p class="kicker">Refused</p><h2>Foundry will not do this</h2>'
+                f'<p style="margin-top:12px">{e(state["refusal"])}</p>'
+                '<p class="hint">The refusal is recorded in the decision log. Change the brief below, or stop.</p>'
+                f"{_choice_buttons(project_id, ('stop',), typed=False)}</section>"
+            )
+        parts.append('<section class="composer" style="margin-top:20px;max-width:none"><h2>Revise your brief</h2>'
+                     '<p class="sub">Change anything, or paste source URLs for the agents to read, then run the research again.</p>'
+                     + _brief_form(project.brief, f"/projects/{project_id}/brief", "Research again") + "</section>")
     elif state.get("rejected"):
-        parts.append('<div class="card warn"><h2 style="margin-top:0">This idea was rejected</h2>'
-                     f'<p>{e(str(state.get("recommendation_reason", "")))}</p>'
-                     '<p class="muted">No research was run. The rejection is recorded in the decision log.</p>'
-                     '<a class="btn primary" href="/#new">Try a digital product idea</a></div>')
+        parts.append(
+            '<section class="decision warn"><p class="kicker">Rejected</p><h2>This idea was rejected</h2>'
+            f'<p style="margin-top:12px">{e(state.get("recommendation_reason", ""))}</p>'
+            '<p class="hint">No research was run. The rejection is recorded in the decision log.</p>'
+            '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Try a digital product idea</a></section>'
+        )
     elif project.status.value == "stopped":
-        parts.append('<div class="card"><strong>You stopped this project.</strong> '
-                     '<a href="/#new">Start a new brief</a></div>')
-        parts.append(_doc("phase1_gate_decision.md"))
+        parts.append('<section class="decision"><p class="kicker">Stopped</p><h2>You stopped this project.</h2>'
+                     '<p class="hint">Stopping on weak evidence is a result, not a failure.</p>'
+                     '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>')
+        parts.append(_doc(project_id, "phase1_gate_decision.md"))
     elif state.get("discover_approved"):
-        parts.append(_launch_section(wf, project_id, state))
+        parts.append(_launch_section(wf, project, state))
     return _page(project.name, "".join(parts) + footer)
 
 
-def _launch_section(wf: Workflow, project_id: str, state: dict[str, Any]) -> str:
-    e = html.escape
+def _research_fold(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
+    view = _opportunities(wf, project, state)
+    if not view:
+        return ""
+    return f'<details class="fold" style="margin-top:20px"><summary>Research from step 1</summary><div class="fold-body">{view}</div></details>'
+
+
+def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
+    project_id = project.id
     actions = wf.launch_actions(project_id)
-    stub = ('<div class="card stub"><strong>STUBBED:</strong> Validate, Build and Commercial setup are designed but not '
-            "built in this prototype, so launch drafts are based on the Discover result only.</div>")
+    stub = ('<div class="notice" style="margin-bottom:16px"><span class="icon orange">i</span><p><strong>STUBBED:</strong> '
+            "Validate, Build and Commercial setup are designed but not built in this prototype, so launch drafts are "
+            "based on the Discover result only.</p></div>")
     if not actions:
-        return (stub + '<div class="card gate"><h2 style="margin-top:0">Discover is approved</h2>'
-                "<p>Next, the launch writer drafts a store page and launch posts. Each draft is checked by the "
+        return (stub + '<section class="decision"><p class="kicker">Next step</p><h2>Discover is approved</h2>'
+                '<p class="hint">Next, the launch writer drafts a store page and launch posts. Each draft is checked by the '
                 "guardrails and then waits for your approval. Nothing is published by Foundry.</p>"
-                f'<form method="post" action="/projects/{project_id}/run/launch">'
-                '<button class="primary" type="submit">Draft store page and launch posts</button></form></div>'
-                + _doc("phase1_step2_interview_script.md", "Interview script", open_=False)
-                + _doc("phase1_step1_opportunities.md", "Research from step 1", open_=False))
-    colour = {"pending": "amber", "approved": "green", "executed": "green", "rejected": "red"}
+                f'<form method="post" action="/projects/{e(project_id)}/run/launch" style="margin-top:18px">'
+                '<button class="btn btn-primary btn-lg" type="submit">Draft store page and launch posts '
+                '<span class="arrow">&rarr;</span></button></form></section>'
+                + _doc(project_id, "phase1_step2_interview_script.md", "Interview script", open_=False)
+                + _research_fold(wf, project, state))
+    tone = {"pending": "solid-orange", "approved": "solid", "executed": "solid", "rejected": "muted"}
     names = {"pending": "WAITING FOR YOU", "approved": "APPROVED", "executed": "APPROVED AND EXPORTED", "rejected": "REJECTED"}
     pending = sum(1 for a in actions if a.status.value == "pending")
     decided = str(state.get("launch_stage", "")).startswith("gate decided")
-    parts = [stub, '<h2>Launch drafts: your approval</h2>'
+    parts = [stub, '<div class="block-head"><div><p class="kicker">Approval screen</p><h2>Launch drafts: your approval</h2></div></div>'
              '<p class="muted">Nothing here has been published. Approving writes the exact text shown to a copy-ready '
              "file for you to post yourself. Foundry cannot post, send or spend.</p>"]
     for blocked in state.get("launch_blocked") or []:
-        parts.append(f'<div class="card warn"><strong>One draft was blocked by the guardrails and was not queued.</strong><br>{e(blocked)}</div>')
+        parts.append('<div style="margin-top:14px">'
+                     + ui.alert("One draft was blocked by the guardrails and was not queued.", f"<p>{e(blocked)}</p>") + "</div>")
     for a in actions:
         status = a.status.value
-        parts.append(
-            f'<div class="card"><p><span class="pill {colour.get(status, "grey")}">{names.get(status, status.upper())}</span> '
-            f"<strong>{e(a.title)}</strong></p>"
+        card = (
+            '<article class="card draft-card" style="margin-top:16px"><div class="head">'
+            f"<h3>{e(a.title)}</h3>{ui.pill(names.get(status, status.upper()), tone.get(status, 'muted'))}</div>"
             f'<pre class="draft">{e(a.body)}</pre>'
-            f'<p class="muted">Fingerprint of this exact text: <code>{e(a.content_hash[:16])}</code></p>'
+            f'<p class="fingerprint">Fingerprint of this exact text: <code>{e(a.content_hash[:16])}</code></p>'
         )
         if status == "pending":
-            parts.append(
-                '<div class="row">'
-                f'<form method="post" action="/projects/{project_id}/actions/{e(a.id)}/approve">'
+            card += (
+                '<div class="row" style="margin-top:14px">'
+                f'<form method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/approve">'
                 f'<input type="hidden" name="seen_hash" value="{e(a.content_hash)}">'
-                '<button class="primary" type="submit">Approve this exact text</button></form>'
-                f'<form class="row" style="margin-top:0" method="post" action="/projects/{project_id}/actions/{e(a.id)}/reject">'
-                '<input type="text" name="reason" style="width:14rem;margin-top:0" placeholder="Reason (optional)">'
-                '<button class="stop" type="submit">Reject</button></form></div>'
+                '<button class="btn btn-primary" type="submit">Approve this exact text</button></form>'
+                f'<form class="row" method="post" action="/projects/{e(project_id)}/actions/{e(a.id)}/reject">'
+                '<input type="text" name="reason" style="width:15rem" placeholder="Reason (optional)">'
+                '<button class="btn btn-stop" type="submit">Reject</button></form></div>'
             )
         elif a.rejection_reason:
-            parts.append(f'<p class="muted">Reason: {e(a.rejection_reason)}</p>')
-        parts.append("</div>")
+            card += f'<p class="muted small">Reason: {e(a.rejection_reason)}</p>'
+        parts.append(card + "</article>")
     if decided:
         choice = str(state.get("launch_stage", "")).split(":")[-1].strip()
-        parts.append(f'<div class="card gate"><h2 style="margin-top:0">Launch review finished</h2>'
-                     f'<p>Your decision: <span class="pill blue">{e(choice.upper())}</span>. Approved drafts are saved as '
+        parts.append('<section class="decision" style="margin-top:20px"><p class="kicker">Done</p><h2>Launch review finished</h2>'
+                     f'<p style="margin-top:12px">Your decision: {ui.pill(choice.upper(), "solid")}. Approved drafts are saved as '
                      "copy-ready text files in the <code>outputs</code> folder for you to post yourself.</p>"
-                     '<p class="muted">This is as far as the prototype goes: Operate is STUBBED.</p>'
-                     '<a class="btn primary" href="/#new">Start a new brief</a></div>')
+                     '<p class="hint">This is as far as the prototype goes: Operate is STUBBED.</p>'
+                     '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>')
     elif pending:
-        parts.append(f'<div class="card"><strong>{pending} draft{"s" if pending != 1 else ""} still waiting for you.</strong> '
-                     '<span class="muted">Approve or reject each one to finish this step.</span></div>')
+        parts.append(f'<div class="notice" style="margin-top:16px"><span class="icon purple">{pending}</span><p>'
+                     f'<strong>{pending} draft{"s" if pending != 1 else ""} still waiting for you.</strong> '
+                     '<span class="muted">Approve or reject each one to finish this step.</span></p></div>')
     else:
-        parts.append('<div class="card gate"><h2 style="margin-top:0">Your decision: Launch</h2>'
-                     '<p class="muted">Every draft is reviewed. Continue is accepted only if at least one was approved.</p>'
-                     f"{_choice_buttons(project_id, STEP_CHOICES, action='launch-gate', typed=False)}</div>")
-    parts.append(_doc("payment_test_log.md", "Delivery test log (MOCKED, no payment took place)", open_=False))
-    parts.append(_doc("phase1_step2_interview_script.md", "Interview script", open_=False))
-    parts.append(_doc("phase1_step1_opportunities.md", "Research from step 1", open_=False))
+        parts.append('<section class="decision" style="margin-top:20px"><p class="kicker">Your decision</p><h2>Your decision: Launch</h2>'
+                     '<p class="hint">Every draft is reviewed. Continue is accepted only if at least one was approved.</p>'
+                     f"{_choice_buttons(project_id, STEP_CHOICES, action='launch-gate', typed=False)}</section>")
+    parts.append('<div class="stack" style="margin-top:20px">'
+                 + _doc(project_id, "payment_test_log.md", "Delivery test log (MOCKED, no payment took place)", open_=False)
+                 + _doc(project_id, "phase1_step2_interview_script.md", "Interview script", open_=False)
+                 + _research_fold(wf, project, state) + "</div>")
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------- founder actions
 
 
 @app.post("/projects/{project_id}/actions/{action_id}/approve")
