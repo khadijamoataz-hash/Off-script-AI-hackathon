@@ -10,7 +10,10 @@ Read the founder brief and do two things.
    - `financial_investment_crypto`: the product gives investment or trading signals or advice,
      handles or manages money, lends, insures, or is a crypto or token product.
    - `health_advice`: the product diagnoses, treats or gives medical, mental-health, diet or
-     medication advice.
+     medication advice, or its purpose is to change a health behaviour or condition (for
+     example quitting smoking, weight loss or diet plans, mental-health support, symptom or
+     medication tracking). It does not matter whether it is an app, a course or a chatbot.
+     Business software for clinics or gyms (bookings, schedules, invoices) is `none`.
    - `legal_advice`: the product gives legal advice or drafts legal documents for the buyer's case.
    - `none`: anything else, including software, templates, courses, newsletters and tools for
      people who work in those fields (for example a booking tool for a clinic is `none`).

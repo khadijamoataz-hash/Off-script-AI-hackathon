@@ -451,7 +451,9 @@ def create_project(
 def _read_output(name: str, project_id: str | None = None) -> str:
     """Read an output file. With a project id, read it from that project's own folder
     (see `Workflow.project_out_dir`); every run after the first has its own folder."""
-    folder = get_workflow().project_out_dir(project_id) if project_id else outputs_dir()
+    folder = get_workflow().existing_out_dir(project_id) if project_id else outputs_dir()
+    if folder is None:
+        return ""
     path = folder / name
     return path.read_text(encoding="utf-8") if path.exists() else ""
 

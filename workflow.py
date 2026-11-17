@@ -8,6 +8,7 @@ is called by a founder action in the UI or CLI.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -187,7 +188,18 @@ class Workflow:
             tool, args, project_id=project_id, phase=PhaseName.DISCOVER.value
         ).allowed
 
-    def project_out_dir(self, project_id: str) -> Path:
+    def existing_out_dir(self, project_id: str) -> Path | None:
+        """The project's output folder if it has written anything yet. Never assigns one, so
+        merely viewing a project cannot claim the top of outputs/."""
+        index_path = self.out_dir / "run_index.json"
+        if not index_path.exists():
+            return None
+        for run in json.loads(index_path.read_text()).get("runs", []):
+            if run["project_id"] == project_id:
+                return self.out_dir / run["folder"]
+        return None
+
+    def project_out_dir(self, project_id: str, *, may_take_root: bool = True) -> Path:
         """Where a project's files go. The first project owns the top of `outputs/`, which is
         where the file names are expected; every later project gets `outputs/<project id>/`
         so runs never overwrite each other. `outputs/run_index.json` lists them."""
@@ -197,7 +209,8 @@ class Workflow:
             for run in index["runs"]:
                 if run["project_id"] == project_id:
                     return self.out_dir / run["folder"]
-            folder = "." if not index["runs"] else project_id
+            root_taken = any(run["folder"] == "." for run in index["runs"])
+            folder = "." if may_take_root and not root_taken else project_id
             project = self.orch.get_project(project_id)
             index["runs"].append({
                 "project_id": project_id,
@@ -209,8 +222,8 @@ class Workflow:
             index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
             return self.out_dir / folder
 
-    def _write(self, project_id: str, name: str, content: str) -> str:
-        folder = self.project_out_dir(project_id)
+    def _write(self, project_id: str, name: str, content: str, *, may_take_root: bool = True) -> str:
+        folder = self.project_out_dir(project_id, may_take_root=may_take_root)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_text(content.rstrip() + "\n", encoding="utf-8")
@@ -268,17 +281,28 @@ class Workflow:
         if not quick.allowed:
             return refused(quick)
 
-        screen = screen_brief(self.adapter, brief)
-        self._add_usage(project_id, screen)
-        self.log.append(
-            action="screen_brief", agent="intake", actor="agent_proposal", phase=phase,
-            decision=f"Product type: {screen.output.excluded_category}. {screen.output.reason}",
-            outcome="excluded" if screen.output.is_excluded else "allowed",
-            sources=[], model=screen.model, cost=0, project_id=project_id,
-            metadata={"tokens": screen.tokens},
-        )
-        if screen.output.is_excluded:
-            return self._excluded(project, screen.output)
+        brief_key = hashlib.sha256(brief.as_prompt().encode("utf-8")).hexdigest()
+        cached = self.get_state(project_id).get("screen")
+        if cached and cached.get("brief") == brief_key:
+            # Same brief as last time: the product type was already decided. Asking again could
+            # only produce a different answer for the same idea.
+            screen_output = BriefScreen(**cached["result"])
+        else:
+            screen = screen_brief(self.adapter, brief)
+            self._add_usage(project_id, screen)
+            screen_output = screen.output
+            self.log.append(
+                action="screen_brief", agent="intake", actor="agent_proposal", phase=phase,
+                decision=f"Product type: {screen_output.excluded_category}. {screen_output.reason}",
+                outcome="excluded" if screen_output.is_excluded else "allowed",
+                sources=[], model=screen.model, cost=0, project_id=project_id,
+                metadata={"tokens": screen.tokens},
+            )
+            self._set_state(
+                project_id, screen={"brief": brief_key, "result": screen_output.model_dump()}
+            )
+        if screen_output.is_excluded:
+            return self._excluded(project, screen_output)
 
         self._set_state(project_id, stage="safety check")
         request = self.engine.evaluate_text(brief.as_prompt(), request_context)
@@ -286,7 +310,7 @@ class Workflow:
             return refused(request)
 
         self._set_state(project_id, stage="searching and reading sources")
-        pages, search_note = self._gather_sources(project_id, brief, screen.output.search_queries)
+        pages, search_note = self._gather_sources(project_id, brief, screen_output.search_queries)
         keywords = set(re.findall(r"[a-z]{4,}", f"{brief.idea} {brief.target_market}".lower()))
         excerpts = [select_excerpt(page.text, keywords) for page in pages]
 
@@ -368,8 +392,9 @@ class Workflow:
             outcome="stop", sources=[], model=None, cost=0, project_id=project.id,
             metadata={"excluded_category": screen.excluded_category, "rejected_by": "system"},
         )
-        path = self._write(project.id, 
-            "phase1_gate_decision.md",
+        # A rejected idea never takes the top of outputs/, which is kept for a full run.
+        path = self._write(project.id, may_take_root=False, name=
+            "phase1_gate_decision.md", content=
             render_gate_decision(project, "stop", reason, founder_decision=None, excluded=True),
         )
         return self._set_state(

@@ -60,6 +60,8 @@ class BriefScreen(BaseModel):
 
 
 def screen_brief(adapter: LLMAdapter, brief: FounderBrief) -> AgentResult[BriefScreen]:
+    # Temperature 0: the same brief must always get the same answer.
     return run_agent(
-        adapter, prompt_name="intake", user_prompt=brief.as_prompt(), response_model=BriefScreen
+        adapter, prompt_name="intake", user_prompt=brief.as_prompt(), response_model=BriefScreen,
+        temperature=0.0,
     )

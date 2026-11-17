@@ -40,12 +40,14 @@ class AgentResult(Generic[TOut]):
 
 
 def run_agent(
-    adapter: LLMAdapter, *, prompt_name: str, user_prompt: str, response_model: type[TOut]
+    adapter: LLMAdapter, *, prompt_name: str, user_prompt: str, response_model: type[TOut],
+    temperature: float | None = None,
 ) -> AgentResult[TOut]:
     response = adapter.generate_structured(
         system_prompt=load_prompt(prompt_name),
         user_prompt=user_prompt,
         response_model=response_model,
+        temperature=temperature,
     )
     return AgentResult(
         output=response.parsed,

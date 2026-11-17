@@ -156,7 +156,7 @@ def test_physical_product_is_rejected_immediately_with_no_research(tmp_path: Pat
     state = wf.run_discover_step1(pid)
     assert state["rejected"] is True and state["awaiting"] is None
     assert wf.orch.get_project(pid).status == ProjectStatus.STOPPED
-    gate = (tmp_path / "outputs" / "phase1_gate_decision.md").read_text()
+    gate = (tmp_path / "outputs" / pid / "phase1_gate_decision.md").read_text()
     assert "STOP" in gate and "REJECTED by Foundry" in gate
     assert not (tmp_path / "outputs" / "phase1_step1_opportunities.md").exists()
     actions = [e.action for e in log.read_all()]
@@ -373,3 +373,28 @@ def test_a_second_run_never_overwrites_the_first(tmp_path: Path) -> None:
     assert "REJECTED" in (out / second / "phase1_gate_decision.md").read_text()
     index = json.loads((out / "run_index.json").read_text())
     assert [(r["project_id"], r["folder"]) for r in index["runs"]] == [(first, "."), (second, second)]
+
+
+def test_a_rejected_first_idea_does_not_take_the_main_outputs_folder(tmp_path: Path) -> None:
+    screen = {"excluded_category": "physical_goods", "reason": "A coffee shop.", "search_queries": []}
+    wf, _ = _workflow(tmp_path, [screen, SCREEN_OK, RESEARCH, _critic("go")])
+    rejected = wf.start_project(BRIEF.model_copy(update={"idea": "A coffee shop inside the campus"})).id
+    assert wf.existing_out_dir(rejected) is None           # viewing a project claims nothing
+    wf.run_discover_step1(rejected)
+    real = wf.start_project(BRIEF).id
+    wf.run_discover_step1(real)
+    out = tmp_path / "outputs"
+    assert (out / rejected / "phase1_gate_decision.md").exists()
+    assert (out / "phase1_step1_opportunities.md").exists()
+    assert wf.existing_out_dir(real) == out / "."
+
+
+def test_repeating_step_1_does_not_screen_the_same_brief_again(tmp_path: Path) -> None:
+    # No second screening reply is scripted: asking again would break the run.
+    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), RESEARCH, _critic("go")])
+    pid = wf.start_project(BRIEF).id
+    wf.run_discover_step1(pid)
+    wf.decide_step(pid, "repeat")
+    state = wf.run_discover_step1(pid)
+    assert state["awaiting"] == "step1_gate" and not state.get("rejected")
+    assert sum(e.action == "screen_brief" for e in log.read_all()) == 1
