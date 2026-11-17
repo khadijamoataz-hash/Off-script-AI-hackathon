@@ -126,6 +126,15 @@ class _TextExtractor(HTMLParser):
             self.parts.append(data)
 
 
+# Plain request headers. Some sites answer 406 Not Acceptable without an Accept header. The
+# User-Agent stays honest: Foundry does not pretend to be a browser to get past a block.
+REQUEST_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+    "Accept-Language": "en;q=1.0, *;q=0.5",
+}
+
+
 def html_to_text(html: str) -> tuple[str, str]:
     """Return (title, visible text) for an HTML document."""
     parser = _TextExtractor()
@@ -168,7 +177,7 @@ def fetch_url(
         for _ in range(5):
             if check_public:
                 _assert_public_url(current)
-            with client.stream("GET", current, headers={"User-Agent": USER_AGENT}) as response:
+            with client.stream("GET", current, headers=REQUEST_HEADERS) as response:
                 if response.is_redirect and response.headers.get("location"):
                     current = str(response.url.join(response.headers["location"]))
                     continue

@@ -92,14 +92,18 @@ def design_business(
     critic_risks: list[str],
     pages: list[FetchedPage],
     excerpts: list[str],
+    verified: list[tuple[int, str]] | None = None,
 ) -> AgentResult[StrategyOutput]:
     risks = "\n".join(f"- {risk}" for risk in critic_risks) or "- (none recorded)"
+    quotes = "\n".join(f"[{number}] {quote}" for number, quote in verified or [])
     user_prompt = (
         f"{brief.as_prompt()}\n\n"
         "APPROVED OPTION\n"
         f"Title: {option.title}\nCustomer: {option.customer}\n"
         f"Problem: {option.problem}\nProduct: {option.product}\n\n"
-        f"CRITIC'S RISKS\n{risks}\n\n{format_sources(pages, excerpts)}"
+        f"CRITIC'S RISKS\n{risks}\n\n"
+        + (f"VERIFIED QUOTES (checked word for word against the numbered source)\n{quotes}\n\n" if quotes else "")
+        + format_sources(pages, excerpts)
     )
     return run_agent(
         adapter, prompt_name="strategist", user_prompt=user_prompt, response_model=StrategyOutput

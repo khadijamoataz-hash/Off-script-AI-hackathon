@@ -19,6 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from agents.critic import CriticOutput, critique
 from agents.launcher import LaunchDrafts, draft_launch, render_store_page
@@ -50,7 +51,9 @@ from tools import SearchResult, ToolError, fetch_url, web_search
 
 _INDEX_LOCK = threading.Lock()
 
-MAX_PAGES = 4
+MAX_PAGES = 5
+MAX_CANDIDATES = 12      # pages tried per step; many sites refuse automated readers
+MIN_PAGE_CHARS = 300     # less text than this is usually a cookie wall or an error page
 EXCERPT_CHARS = 1400
 STEP_CHOICES = ("continue", "repeat", "go_back", "stop")
 
@@ -133,7 +136,7 @@ class Workflow:
         # Approved exports go to the same folder as the other outputs.
         self.orch.outbox.export_dir = self.out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.search = search or web_search
+        self.search = search or (lambda query: web_search(query, max_results=8))
         self.fetch = fetch or fetch_url
         with self._connect() as conn:
             conn.execute(
@@ -430,7 +433,7 @@ class Workflow:
                 decision=f"Searched '{query}': {len(results)} results.", outcome="recorded",
                 sources=[r.url for r in results], model=None, cost=0, project_id=project_id,
             )
-            for result in results[:2]:
+            for result in results[:6]:
                 if result.url not in urls:
                     urls.append(result.url)
 
@@ -438,12 +441,25 @@ class Workflow:
             if not self._tool_allowed(project_id, "fetch_url", {"url": url}):
                 return "A page fetch was blocked by guardrails."
             try:
-                return self.fetch(url, project_id=project_id, ledger=self.ledger)
+                page = self.fetch(url, project_id=project_id, ledger=self.ledger)
             except ToolError as exc:
                 return f"Skipped a page that could not be read ({exc})."
+            if len(page.text) < MIN_PAGE_CHARS:
+                return f"Skipped a page with almost no readable text ({url})."
+            return page
 
+        # Founder-supplied URLs first, then search results with one page per website before
+        # a second page from the same site, so the evidence does not all come from one source.
+        founder_urls = list(brief.source_urls) if include_brief_urls else []
+        searched = [u for u in urls if u not in founder_urls]
+        seen_hosts: set[str] = set()
+        first, rest = [], []
+        for url in searched:
+            host = urlparse(url).hostname or url
+            (rest if host in seen_hosts else first).append(url)
+            seen_hosts.add(host)
+        candidates = (founder_urls + first + rest)[:MAX_CANDIDATES]
         pages: list[FetchedPage] = []
-        candidates = urls[: MAX_PAGES + 2]
         if candidates:
             with ThreadPoolExecutor(max_workers=6) as pool:
                 for outcome in pool.map(_fetch, candidates):
@@ -648,12 +664,24 @@ class Workflow:
         artifact = project.phase_artifacts[PhaseName.DISCOVER.value]
         option = Opportunity(**artifact["recommended_option"])
         brief = self._brief(project)
-        pages = self.ledger.list_fetches(project_id=project_id)[:MAX_PAGES]
+        # Pages behind the claims Discover verified come first, so the canvas can cite them.
+        verified_claims = self.ledger.list_claims(
+            project_id=project_id, linked_phase=PhaseName.DISCOVER.value, claim_type=ClaimType.FACT
+        )
+        all_pages = {p.url: p for p in self.ledger.list_fetches(project_id=project_id)}
+        cited = list(dict.fromkeys(c.source_url for c in verified_claims if c.source_url in all_pages))
+        pages = ([all_pages[u] for u in cited] + [p for u, p in all_pages.items() if u not in cited])[:MAX_PAGES]
+        numbers = {p.url: i for i, p in enumerate(pages, start=1)}
+        verified = [
+            (numbers[c.source_url], c.quote) for c in verified_claims
+            if c.source_url in numbers and c.quote
+        ][:12]
         keywords = set(re.findall(r"[a-z]{4,}", f"{brief.idea} {option.problem}".lower()))
         excerpts = [select_excerpt(page.text, keywords) for page in pages]
 
         strategy = design_business(
-            self.adapter, brief, option, artifact.get("critic", {}).get("risks", []), pages, excerpts
+            self.adapter, brief, option, artifact.get("critic", {}).get("risks", []), pages, excerpts,
+            verified=verified,
         )
         self._add_usage(project_id, strategy)
         out = strategy.output

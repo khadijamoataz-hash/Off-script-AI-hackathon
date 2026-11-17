@@ -10,6 +10,9 @@ Produce:
    and evidence:
    - If a source supports the box, set `source_number` to that source and copy into `quote`
      one sentence from that source WORD FOR WORD. Do not shorten, fix or paraphrase it.
+   - VERIFIED QUOTES are sentences already checked against their numbered source. When one
+     supports a box (often Problem, Customer segments or Channels), use its number and copy
+     it exactly. Use a quote only for a box it really supports.
    - Otherwise set `source_number` and `quote` to null. The box will be labelled ASSUMPTION.
      Most boxes will be assumptions at this stage; that is expected and honest.
    - `revenue_streams` describes how the product could charge. Never estimate or promise

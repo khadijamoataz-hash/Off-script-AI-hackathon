@@ -28,7 +28,10 @@ def CLEAN(text, ctx):
 URL = "https://example.org/freelance-survey"
 PAGE_TEXT = (
     "Freelance designers report spending five hours a month chasing late invoices.\n"
-    "Most of them track payments in a spreadsheet they built themselves."
+    "Most of them track payments in a spreadsheet they built themselves.\n"
+    "The survey asked 240 freelancers in design, illustration and branding about their last "
+    "twelve months of client work, including how often invoices were paid late and what "
+    "they did about it. Answers were collected online and are self-reported."
 )
 
 BRIEF = FounderBrief(
@@ -470,3 +473,22 @@ def test_commercial_setup_sources_prices_and_needs_every_policy_approved(tmp_pat
     assert [e.outcome for e in entries] == ["repeat", "continue"]
     assert all(e.approved_by == "founder" for e in entries)
     assert log.verify().valid
+
+
+def test_sources_prefer_different_websites_and_skip_empty_pages(tmp_path: Path) -> None:
+    wf, _ = _workflow(tmp_path, [])
+    same_site = [f"https://one.example.org/page{i}" for i in range(6)]
+    others = ["https://two.example.org/a", "https://three.example.org/b"]
+    wf.search = lambda query: [SearchResult(title="r", url=u) for u in same_site[:4]] + [
+        SearchResult(title="r", url=u) for u in others]
+
+    def fetch(url: str, *, project_id: str, ledger: EvidenceLedger):
+        text = "Cookie settings" if "three" in url else PAGE_TEXT
+        return ledger.record_fetch(project_id=project_id, url=url, title="t", text=text)
+
+    wf.fetch = fetch
+    pid = wf.start_project(BRIEF).id
+    pages, notes = wf._gather_sources(pid, BRIEF, ["q1"])
+    urls = [p.url for p in pages]
+    assert urls[:2] == ["https://one.example.org/page0", "https://two.example.org/a"]
+    assert "https://three.example.org/b" not in urls and "almost no readable text" in notes
