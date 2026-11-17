@@ -63,7 +63,9 @@ A state machine moves a project through six phases: Discover, Validate, Build, C
 
 ## Cost per run
 
-About $0.00 per run (local open-weight model, no paid API). Every entry in `decision_log.json` carries a `model` and a `cost` field. A measured token count will be reported here once the pipeline runs end to end.
+About $0.00 per run (local open-weight model `qwen3.5:9b`, no paid API).
+
+Measured on the committed demo run (`outputs/`, `decision_log.json`): 10 agent model calls, 22,808 tokens (15,046 prompt, 7,762 completion), on an Apple M3 laptop. That run went through Discover three times (the founder chose repeat twice) and then Validate, so a single pass uses fewer. The guardrail checks make additional model calls that are not included in this count. Every entry in `decision_log.json` carries a `model` and a `cost` field.
 
 ## What our system will NOT do
 

@@ -730,7 +730,9 @@ class Workflow:
             )
         if count < 0 or count > 100000:
             raise WorkflowError("Enter the number of real signals, 0 or more.")
-        kind = " ".join(kind.split())[:80] or "sign-ups"
+        kind = " ".join(kind.split())[:80]
+        if not re.search(r"[^\W\d_]", kind):      # needs at least one letter, e.g. "sign-ups"
+            kind = "sign-ups"
         note = " ".join(note.split())[:300]
         self.orch.record_demand_signals(
             project_id, count, note=f"Founder recorded {count} {kind}. {note}".strip()

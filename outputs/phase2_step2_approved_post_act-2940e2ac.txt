@@ -1,0 +1,9 @@
+=== FOUNDRY APPROVED EXPORT - NOT POSTED ANYWHERE; COPY-READY TEXT FOR THE FOUNDER (POST) ===
+Action ID: ACT-2940E2AC
+Target Channel: invite post
+Title / Subject: Post inviting people to the landing page
+Content SHA-256: 5487113a6c318351e97248bcc84c72bf4ccb00f3aa220929a7afa7755d3d46ce
+Approval Token JTI: TOK-3958CFA651E2
+Executed At: 2026-11-17T13:07:53.982863+00:00
+------------------------------------------------------------
+Hey everyone, I'm building a resource specifically for international CS grads facing visa hurdles and saturated dev markets. Traditional paths are closing due to AI, but QA roles remain open if you know how to use LLMs for testing. I've put together a plan to teach this specific skill set. If this sounds like your situation, please check out the page below and let me know if it fits your needs.
