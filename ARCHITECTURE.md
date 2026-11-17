@@ -81,6 +81,25 @@ Each phase lists its agents, tools, method and output. Output files go to `outpu
 
 Every step ends with a gate. After each step the system shows a summary, its recommendation and the choices, then waits for the founder.
 
+```mermaid
+flowchart LR
+    S[Step runs: agents, sources, drafts] --> C[gates.py checks: evidence vs target set in advance, approvals, tests]
+    C --> R{System recommendation}
+    R -->|evidence at or above target| GO[recommend CONTINUE]
+    R -->|between half and target| RP[recommend REPEAT]
+    R -->|below half of target, or critic says stop| ST[recommend STOP]
+    GO --> F{Founder chooses in the UI}
+    RP --> F
+    ST --> F
+    F -->|continue| N[Next step or phase; refused and logged if the gate is not met]
+    F -->|repeat| S
+    F -->|go back| P[Pivot back to an earlier phase; later work kept and marked stale]
+    F -->|stop| X[Project stopped]
+    F -.->|unclear reply such as ok| Q[Asked again; nothing moves]
+```
+
+The recommendation is computed by code from the numbers; the founder's choice is the only thing that moves the project, and every choice is logged with `approved_by: "founder"`.
+
 | Gate type | What it checks |
 |---|---|
 | Founder approval | The founder has reviewed the step's output and chosen an outcome |
