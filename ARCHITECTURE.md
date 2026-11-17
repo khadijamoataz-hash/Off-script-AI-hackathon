@@ -164,6 +164,8 @@ reconciliation: orders == payments - fees == payouts, mismatches listed for the 
 
 Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decision_log.json` and `outputs/` as plain text.
 
+The project's **Evidence & activity** page reads the project's claims, demand target and results, approval statuses and decision timeline from those existing stores. Its downloadable Markdown report is an internal research snapshot, not an approved outbound draft. Both views filter records by the exact project id; neither runs a model, appends a decision, writes pipeline outputs, issues approval tokens or executes an action. Signing secrets and approval tokens are not included. The interface keeps navigation available on narrow screens, provides a skip-to-content link and respects reduced-motion preferences.
+
 ## Built vs. stubbed
 
 | Part | Status |
@@ -172,6 +174,7 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 | Founder brief intake and excluded-product screening (`agents/intake.py`) | Working |
 | Web search through SearXNG and page fetch (`tools.py`) | Working |
 | Evidence store (`evidence.py`) | Working; a FACT needs a page fetched in the run that contains the quote |
+| Project Evidence & activity workspace and internal report download (`app.py`) | Working; read-only and project-scoped, no model call or approval action |
 | Phase 1 Discover agents and step runner (`agents/researcher.py`, `agents/critic.py`, `workflow.py`) | Working |
 | Step gates and approval screen in the browser (`app.py`) | Working |
 | Phase 2 Validate: Lean Canvas, demand test, landing page, evidence gate (`agents/strategist.py`, `workflow.py`) | Working |

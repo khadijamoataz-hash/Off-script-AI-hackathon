@@ -5,23 +5,26 @@
   choices. A step runs in the background; nothing moves past a gate without a founder choice.
 - `/status`: live checks (model, search, decision log, guardrail evals) and the status table.
 
-Working: brief intake and Phase 1 (Discover). Later phases are STUBBED and labelled so.
+Working: Discover, Validate, Commercial setup and Launch drafts. Build and Operate are STUBBED.
 Page layout, styles and result views live in `ui.py`; this file holds the routes.
 """
 
 from __future__ import annotations
 
 import os
+import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 import threading
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -29,13 +32,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import ui
 from agents.intake import FounderBrief
 from approval import OutboxError
-from evidence import ClaimType
+from evidence import ClaimType, EvidenceLedger, quote_in_text
 from guardrails import PolicyContext, PolicyViolationError
 from orchestrator import Orchestrator, OrchestratorError, ProjectRecord
 from tools import search_status
 from workflow import STEP_CHOICES, Workflow, WorkflowError, outputs_dir
 
-from decision_log import DecisionLog
+from decision_log import DecisionEntry, DecisionLog
 from llm import LLMAdapter, LLMConfig
 from evals.redteam import run_redteam_suite
 
@@ -245,7 +248,7 @@ def status_page() -> str:
         '<section class="block"><div class="block-head"><h2>What works and what is mocked</h2></div>'
         f'<div class="table-wrap"><table><tr><th>Part</th><th>Status</th><th>Where</th></tr>{caps}</table></div></section>'
     )
-    return _page("Status", body, model_ready=bool(llm["ready"]))
+    return _page("Status", body, model_ready=None if llm["is_mock"] else bool(llm["ready"]))
 
 
 # ---------------------------------------------------------------------- workflow plumbing
@@ -401,11 +404,12 @@ def index() -> str:
         f"{projects}"
         '<div class="notice" style="margin-top:40px"><span class="icon orange">i</span><p><strong>What this prototype does.</strong> '
         "Working: Discover (research, critic review, interview script), Validate (Lean Canvas, landing page, "
-        "demand test against a target you fix in advance) and Launch drafts with your approval. "
-        "<strong>STUBBED</strong> (designed, not built): Build, Commercial setup, Operate. "
+        "demand test against a target you fix in advance), Commercial setup (price and policy drafts) "
+        "and Launch drafts with your approval. "
+        "<strong>STUBBED</strong> (designed, not built): Build, Operate. "
         "Delivery is <strong>MOCKED</strong>. There are no payments.</p></div>"
     )
-    return _page("Challenge your idea", body, model_ready=bool(llm["ready"]))
+    return _page("Challenge your idea", body, model_ready=None if llm["is_mock"] else bool(llm["ready"]))
 
 
 def _stage_label(state: dict[str, Any], status: str) -> str:
@@ -462,6 +466,259 @@ def create_project(
 
 
 # ---------------------------------------------------------------------- project page
+
+
+def _workspace_records(project_id: str) -> dict[str, Any]:
+    """Read persisted records without initializing a workflow or its write-capable services."""
+    wf = _workflow
+    db_path = wf.orch.db_path if wf else Path(os.environ.get("FOUNDRY_DB_PATH", "data/foundry.sqlite3"))
+    if not db_path.is_file():
+        raise HTTPException(status_code=404, detail="Project not found")
+    with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        project = Orchestrator._row_to_project(row)
+        row = conn.execute("SELECT state_json FROM workflow_state WHERE project_id = ?", (project_id,)).fetchone()
+        state = json.loads(row["state_json"]) if row else {}
+        claims = [
+            EvidenceLedger._row_to_claim(row) for row in conn.execute(
+                "SELECT * FROM claims WHERE project_id = ? ORDER BY created_at, id", (project_id,)
+            )
+        ]
+        pages = {row["url"]: row for row in conn.execute(
+            "SELECT url, text FROM fetched_pages WHERE project_id = ?", (project_id,)
+        )}
+        approvals = {row["status"]: row["count"] for row in conn.execute(
+            "SELECT status, COUNT(*) AS count FROM outbox_actions WHERE project_id = ? GROUP BY status",
+            (project_id,),
+        )}
+    # Recheck stored FACTs against this project's fetched page, never a live network request.
+    for claim in claims:
+        page = pages.get(claim.source_url)
+        if claim.claim_type == ClaimType.FACT and (
+            page is None or not quote_in_text(claim.quote, page["text"])
+        ):
+            claim.claim_type = ClaimType.ASSUMPTION
+    if wf:
+        entries = wf.log.read_all(project_id=project_id)
+    elif DECISION_LOG.is_file():
+        entries = [
+            DecisionEntry(**record) for record in json.loads(DECISION_LOG.read_text(encoding="utf-8"))
+            if record.get("project_id") == project_id
+        ]
+    else:
+        entries = []
+    return {"project": project, "state": state, "claims": claims, "approvals": approvals, "entries": entries}
+
+
+_REPORT_NOTICE = (
+    "DRAFT — internal research only. This report is not founder approval or publishing, "
+    "does not execute any action, and does not establish market validation or promise success."
+)
+
+
+def _workspace_sections(records: dict[str, Any]) -> list[tuple[str, str]]:
+    project, state = records["project"], records["state"]
+    stages = "\n".join(
+        f"{label}: {state[key]}" for key, label in (
+            ("validate_stage", "Validate stage"), ("commercial_stage", "Commercial setup stage"),
+            ("launch_stage", "Launch stage"), ("awaiting", "Waiting for"),
+        ) if state.get(key)
+    )
+    facts = sum(c.claim_type == ClaimType.FACT for c in records["claims"])
+    target = state.get("validate_target")
+    demand = (
+        f"Fixed demand target: {target.get('target')} {target.get('what', '')}"
+        if target else "Fixed demand target: not set."
+    )
+    demand += f"\nRecorded demand signals: {project.recorded_demand_signals}"
+    results = state.get("validate_results") or []
+    demand += "\n" + ("\n".join(
+        f"- {r.get('count')} {r.get('kind', '')}: {r.get('note', '')}" for r in results
+    ) if results else "No demand test results recorded.")
+    counts = records["approvals"]
+    claims = "\n\n".join(
+        f"{c.claim_type.value} | {c.id} | {c.linked_phase} | confidence: {c.confidence.value}\n{c.text}\n"
+        + (f"Source: {c.source_url}\nSupporting quote: {c.quote}\nRetrieved: {c.retrieved_date}"
+           if c.claim_type == ClaimType.FACT else "ASSUMPTION — not verified by a fetched source quote.")
+        for c in records["claims"]
+    ) or "No claims recorded."
+    # Deliberately allowlist fields: approval tokens and internal log metadata are not report content.
+    activity = "\n\n".join(
+        f"{entry.timestamp} | {entry.phase} | {entry.agent} | {entry.action}\n"
+        f"Outcome: {entry.outcome or 'not recorded'} | Approved by: {entry.approved_by or 'not approved'}\n"
+        f"{entry.detail}\nSources: {', '.join(entry.sources) or 'none'}\n"
+        f"Model: {entry.model or 'none'} | Cost: ${entry.cost:g}"
+        for entry in records["entries"]
+    ) or "No project actions or decisions recorded."
+    return [
+        ("Current stage", f"Project: {project.name}\nProject id: {project.id}\n"
+         f"Phase: {project.current_phase.value} | Status: {project.status.value}\n"
+         f"Stage: {_stage_label(state, project.status.value)}\n"
+         f"Persisted workflow stage: {state.get('stage') or 'not recorded'}\n{stages}\n"
+         "Build: STUBBED. Operate: STUBBED. Delivery: MOCKED. No payments.\n"
+         "Commercial setup: Working (price and policy drafts). No live publishing connectors."),
+        ("Demand target and results", demand + "\nOnly recorded real demand counts; MOCKED data is not evidence."),
+        ("Approval status", "\n".join(
+            f"{status}: {counts.get(status, 0)}" for status in ("pending", "approved", "rejected", "executed")
+        ) + "\nExecuted means copy-ready export only, not live publishing."),
+        ("Evidence", f"Verified FACT: {facts} | ASSUMPTION: {len(records['claims']) - facts}\n"
+         "FACT means a supporting quote matches a page fetched for this project, not independent proof.\n\n" + claims),
+        ("Activity and decisions", activity),
+    ]
+
+
+def _workspace_source(url: str) -> str:
+    """Only HTTP(S) sources become links, including when a log contains an untrusted URL."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return e(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return e(url)
+    return (f'<a href="{e(url)}" target="_blank" rel="noopener noreferrer" '
+            f'style="overflow-wrap:anywhere">{e(url)}</a>')
+
+
+def _workspace_stage(project: ProjectRecord, state: dict[str, Any]) -> str:
+    if project.status.value == "stopped" or state.get("rejected"):
+        return _stage_label(state, project.status.value)
+    if project.status.value != "active":
+        return f"{project.current_phase.value.title()}: {project.status.value}"
+    for key, phase in (("launch_stage", "Launch"), ("commercial_stage", "Commercial setup"),
+                       ("validate_stage", "Validate")):
+        stage = str(state.get(key) or "")
+        if not stage:
+            continue
+        if stage.startswith("gate decided"):
+            return f"{phase} reviewed"
+        if phase == "Validate" and state.get("validate_passed"):
+            return "Validate passed; Commercial setup next"
+        if phase == "Commercial setup" and state.get("commercial_passed"):
+            return "Policies approved; Launch next"
+        labels = {
+            "results_recorded": "Demand results recorded; waiting for your decision",
+            "awaiting_results": "Waiting for your demand test results",
+            "awaiting approvals": f"{phase}: waiting for your approval",
+            "drafting": f"{phase}: drafting",
+            "starting": f"{phase}: starting",
+            "failed": f"{phase}: failed; review the project before retrying",
+            "ready": f"{phase}: ready to start",
+        }
+        return labels.get(stage, f"{phase}: {stage}")
+    return _stage_label(state, project.status.value)
+
+
+@app.get("/projects/{project_id}/workspace", response_class=HTMLResponse)
+def project_workspace(project_id: str) -> str:
+    records = _workspace_records(project_id)
+    project, state = records["project"], records["state"]
+    facts = sum(c.claim_type == ClaimType.FACT for c in records["claims"])
+    assumptions = len(records["claims"]) - facts
+    counts = records["approvals"]
+    target, results = state.get("validate_target"), state.get("validate_results") or []
+    url = quote(project_id, safe="")
+    tiles = "".join(
+        f'<div class="tile"><p class="label">{e(label)}</p><div class="v">{e(value)}</div>'
+        f'<p class="small muted">{e(note)}</p></div>'
+        for label, value, note in (
+            ("Verified FACT", facts, "Backed by a fetched source quote"),
+            ("ASSUMPTION", assumptions, "Still needs supporting evidence"),
+            ("Pending approvals", counts.get("pending", 0), "No action taken by viewing this page"),
+            ("Demand recorded", project.recorded_demand_signals if results else "Not recorded",
+             f"Fixed target: {target.get('target')}" if target else "Target not set"),
+        )
+    )
+    claims = ""
+    for claim in records["claims"]:
+        fact = claim.claim_type == ClaimType.FACT
+        citation = (
+            f'<blockquote class="quote">Supporting quote: {e(claim.quote)}</blockquote>'
+            f'<p class="small">Source: {_workspace_source(claim.source_url or "")}</p>'
+            f'<p class="small muted">Retrieved: {e(claim.retrieved_date)}</p>'
+            if fact else '<p class="small muted">ASSUMPTION — not verified by a fetched source quote.</p>'
+        )
+        claims += (
+            '<li style="list-style:none;margin:0 0 18px">'
+            f'<article class="tile">{ui.pill(claim.claim_type.value, "purple" if fact else "orange")}'
+            f'<p style="margin-top:12px">{e(claim.text)}</p>{citation}'
+            f'<p class="small muted">{e(claim.id)} &middot; {e(claim.linked_phase)} '
+            f'&middot; confidence: {e(claim.confidence.value)}</p></article></li>'
+        )
+    activity = ""
+    for entry in reversed(records["entries"]):
+        sources = ", ".join(_workspace_source(source) for source in entry.sources) or "none"
+        activity += (
+            '<li style="list-style:none"><details class="fold"><summary>'
+            f'{e(entry.action)} &middot; {e(entry.outcome or "recorded")}'
+            f'<span class="small muted"> &mdash; {e(entry.timestamp)}</span></summary>'
+            f'<div class="fold-body"><p>{e(entry.detail)}</p>'
+            f'<p class="small">Outcome: {e(entry.outcome or "not recorded")} &middot; '
+            f'Approved by: {e(entry.approved_by or "not approved")}</p>'
+            f'<p class="small muted">{e(entry.phase)} &middot; {e(entry.agent)} &middot; '
+            f'Model: {e(entry.model or "none")} &middot; Cost: ${e(f"{entry.cost:g}")}</p>'
+            f'<p class="small">Sources: {sources}</p></div></details></li>'
+        )
+    demand = (
+        f'<p>Fixed demand target: {e(target.get("target"))} {e(target.get("what", ""))}</p>'
+        if target else "<p>Fixed demand target: not set.</p>"
+    )
+    if results:
+        demand += f'<p>Recorded demand signals: {project.recorded_demand_signals}</p><ul class="points">'
+        demand += "".join(
+            f'<li>{e(result.get("count"))} {e(result.get("kind", ""))}'
+            f'{": " + e(result["note"]) if result.get("note") else ""}</li>' for result in results
+        ) + "</ul>"
+    else:
+        demand += "<p>No demand test results recorded.</p>"
+    approvals = " ".join(
+        ui.pill(f"{status}: {counts.get(status, 0)}", "orange" if status == "pending" else "muted")
+        for status in ("pending", "approved", "rejected", "executed")
+    )
+    body = (
+        f'<a class="back" href="/projects/{e(url)}">&larr; Back to project</a>'
+        '<p class="kicker">Evidence &amp; activity</p>'
+        f'<div class="proj-head"><h1>{e(project.name)}</h1>'
+        f'{ui.pill(_workspace_stage(project, state), "purple")}</div>'
+        f'<p class="muted">{e(_REPORT_NOTICE)}</p>'
+        '<nav class="row" aria-label="Workspace sections" style="margin-top:20px">'
+        '<a class="btn" href="#evidence">Evidence</a><a class="btn" href="#decisions">Decisions</a>'
+        f'<a class="btn btn-primary" href="/projects/{e(url)}/report">Download project report (.md)</a></nav>'
+        f'<div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr))">{tiles}</div>'
+        '<section class="block" id="demand"><div class="block-head"><h2>Demand target and results</h2></div>'
+        f'{demand}<p class="small muted">Only recorded real demand counts; MOCKED data is not evidence.</p></section>'
+        '<section class="block"><div class="block-head"><h2>Approval status</h2></div>'
+        f'<div class="row">{approvals}</div>'
+        '<p class="small muted" style="margin-top:12px">Executed means copy-ready export only, not live publishing.</p></section>'
+        '<section class="block" id="evidence"><div class="block-head"><h2>Evidence</h2></div>'
+        f'<p>Verified FACT: {facts} | ASSUMPTION: {assumptions}</p>'
+        '<p class="small muted">FACT means a supporting quote matches a page fetched for this project, '
+        'not independent proof.</p>'
+        + (f'<ul style="padding:0">{claims}</ul>' if claims else '<p class="muted">No claims recorded.</p>')
+        + '</section><section class="block" id="decisions"><div class="block-head"><h2>Activity and decisions</h2></div>'
+        '<p class="small muted">Most recent first. Open an event to see its recorded decision and sources.</p>'
+        + (f'<ul style="padding:0">{activity}</ul>' if activity else '<p class="muted">No project actions or decisions recorded.</p>')
+        + '</section><div class="notice"><span class="icon orange">i</span><p>'
+        'Build: STUBBED. Operate: STUBBED. Delivery: MOCKED. No payments. '
+        'Commercial setup: Working (price and policy drafts). No live publishing connectors.</p></div>'
+    )
+    return _page("Evidence & activity", body)
+
+
+@app.get("/projects/{project_id}/report", response_class=PlainTextResponse)
+def project_report(project_id: str) -> PlainTextResponse:
+    records = _workspace_records(project_id)
+    text = "# Project report\n\n" + _REPORT_NOTICE + "\n\n" + "\n\n".join(
+        f"## {title}\n\n{body}" for title, body in _workspace_sections(records)
+    ) + "\n"
+    return PlainTextResponse(text, headers={
+        "Content-Disposition": 'attachment; filename="project-report.md"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 def _read_output(name: str, project_id: str | None = None) -> str:
@@ -592,6 +849,7 @@ def project_page(project_id: str, unclear: str = "") -> str:
         '<a class="back" href="/#projects">&larr; All projects</a>',
         f'<div class="proj-head"><div><p class="kicker">Your project</p><h1>{e(project.name)}</h1></div>'
         f"{ui.pill(label, _stage_tone(label))}</div>",
+        f'<p><a class="btn" href="/projects/{e(quote(project.id, safe=""))}/workspace">Evidence &amp; activity</a></p>',
         _stepper(state, project.status.value),
         f'<details class="fold"><summary>Your brief <span class="muted" style="font-weight:500">(what you entered)</span></summary>'
         f'<div class="fold-body"><table class="brief-table">{brief_rows}</table></div></details>',

@@ -45,7 +45,7 @@ CSS = """
 @view-transition{navigation:auto}
 *{box-sizing:border-box}
 html{background:var(--bg);-webkit-text-size-adjust:100%}
-body{margin:0;font-family:var(--font);font-size:15.5px;line-height:1.6;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{margin:0;font-family:var(--font);font-size:15.5px;line-height:1.6;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-wrap:anywhere}
 a{color:var(--purple);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 :focus-visible{outline:3px solid rgba(104,71,245,.45);outline-offset:2px}
 h1,h2,h3{color:var(--navy);letter-spacing:-.02em;line-height:1.2;margin:0}
@@ -55,6 +55,9 @@ code{font-family:var(--mono);font-size:.84em;background:var(--navy-50);color:var
 .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
 .muted{color:var(--muted)}.small{font-size:13.5px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.skip-link{position:absolute;top:8px;left:16px;z-index:100;transform:translateY(-200%);padding:12px 18px;background:var(--navy);color:#fff;border-radius:var(--r-sm)}
+.skip-link:focus{transform:none;color:#fff}
+#main-content{scroll-margin-top:90px}
 
 /* header and footer */
 .topbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.88);backdrop-filter:saturate(1.5) blur(14px);-webkit-backdrop-filter:saturate(1.5) blur(14px);border-bottom:1px solid var(--line)}
@@ -63,13 +66,14 @@ code{font-family:var(--mono);font-size:.84em;background:var(--navy-50);color:var
 .brand:hover{text-decoration:none}
 .brand-logo{display:block;height:40px;width:auto;max-width:none}
 @media(max-width:560px){.brand-logo{height:34px}}
-.nav{display:flex;align-items:center;gap:2px}
-.nav a{color:var(--ink-2);font-size:14px;font-weight:550;padding:8px 12px;border-radius:9px;white-space:nowrap}
+.nav{display:flex;align-items:center;gap:2px;min-width:0}
+.nav a{display:inline-flex;align-items:center;min-height:44px;color:var(--ink-2);font-size:14px;font-weight:550;padding:8px 12px;border-radius:9px;white-space:nowrap}
 .nav a:hover{background:var(--purple-50);color:var(--purple);text-decoration:none}
 .nav a.cta{background:var(--navy);color:#fff;margin-left:8px;padding:9px 14px}
 .nav a.cta:hover{background:#262650;color:#fff}
 .chip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--ink-2);background:#fff;border:1px solid var(--line);border-radius:999px;padding:5px 11px;white-space:nowrap}
 .chip:hover{border-color:var(--purple-100);text-decoration:none}
+.nav a.chip{min-width:0;max-width:22rem;white-space:normal;overflow-wrap:anywhere}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--purple);flex:none}
 .dot.off{background:var(--orange)}
 main{padding:40px 0 80px;animation:rise .4s cubic-bezier(.2,.7,.2,1) both}
@@ -78,7 +82,15 @@ body.live main{animation:none}
 .site-foot{border-top:1px solid var(--line);background:#fff}
 .site-foot .wrap{display:flex;flex-wrap:wrap;gap:8px 24px;justify-content:space-between;align-items:center;padding-top:22px;padding-bottom:22px;font-size:13.5px;color:var(--muted)}
 .site-foot strong{color:var(--navy);font-weight:650}
-@media(max-width:760px){.nav a:not(.cta){display:none}.topbar .chip{display:none}}
+@media(max-width:760px){
+.topbar{position:relative}
+.topbar .wrap{height:auto;min-height:64px;flex-wrap:wrap;gap:8px;padding-top:12px;padding-bottom:12px}
+.nav{width:100%;flex-wrap:wrap;gap:4px}
+.nav a{padding:10px}
+.nav a.cta{margin-left:auto}
+.nav a.chip{order:1;max-width:100%;flex-basis:100%}
+#main-content{scroll-margin-top:16px}
+}
 
 /* buttons and inputs */
 .btn,button.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font:600 14.5px/1.2 var(--font);padding:11px 18px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:#fff;color:var(--navy);cursor:pointer;text-decoration:none;transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .1s}
@@ -92,10 +104,10 @@ body.live main{animation:none}
 .btn .arrow{transition:transform .15s}.btn:hover .arrow{transform:translateX(3px)}
 label{display:block;font-weight:650;font-size:13.5px;color:var(--navy);margin-bottom:6px}
 label .opt{font-weight:450;color:var(--muted)}
-input[type=text],textarea{width:100%;font:inherit;font-size:15px;color:var(--ink);background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:11px 14px;transition:border-color .15s,box-shadow .15s}
+input[type=text],input[type=number],textarea{width:100%;max-width:100%;min-width:0;min-height:44px;font:inherit;font-size:16px;color:var(--ink);background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:11px 14px;transition:border-color .15s,box-shadow .15s}
 textarea{resize:vertical;line-height:1.55}
-input[type=text]:hover,textarea:hover{border-color:#C5BFE0}
-input[type=text]:focus,textarea:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 4px rgba(104,71,245,.14)}
+input[type=text]:hover,input[type=number]:hover,textarea:hover{border-color:#C5BFE0}
+input[type=text]:focus,input[type=number]:focus,textarea:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 4px rgba(104,71,245,.14)}
 ::placeholder{color:#A6A4B8}
 .field{margin-top:16px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
@@ -104,7 +116,7 @@ input[type=text]:focus,textarea:focus{outline:none;border-color:var(--purple);bo
 /* surfaces */
 .card{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:24px;box-shadow:var(--shadow)}
 .stack>*+*{margin-top:16px}
-.pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:750;letter-spacing:.05em;text-transform:uppercase;padding:4px 10px;border-radius:999px;line-height:1.35;white-space:nowrap;vertical-align:middle}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:750;letter-spacing:.05em;text-transform:uppercase;padding:4px 10px;border-radius:999px;line-height:1.35;max-width:100%;white-space:normal;vertical-align:middle}
 .pill.purple{background:var(--purple-50);color:var(--purple-700)}
 .pill.orange{background:var(--orange-50);color:var(--orange-700)}
 .pill.navy{background:var(--navy);color:#fff}
@@ -167,7 +179,7 @@ details.sources-add>summary{cursor:pointer;font-size:14px;font-weight:650;color:
 .how h3{font-size:15.5px;margin-bottom:6px}.how p{font-size:14px;color:var(--muted)}
 @media(max-width:900px){.how{grid-template-columns:1fr 1fr}}@media(max-width:560px){.how{grid-template-columns:1fr}}
 .section-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:56px 0 16px}
-.proj-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.proj-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px}
 .proj{display:flex;flex-direction:column;gap:12px;padding:18px 20px;background:#fff;border:1px solid var(--line);border-radius:var(--r);color:var(--navy);box-shadow:var(--shadow-sm);transition:border-color .15s,box-shadow .15s,transform .15s}
 .proj:hover{text-decoration:none;border-color:var(--purple-100);box-shadow:var(--shadow);transform:translateY(-2px)}
 .proj strong{font-size:15.5px;line-height:1.35}
@@ -215,6 +227,8 @@ details.sources-add>summary{cursor:pointer;font-size:14px;font-weight:650;color:
 .choice .rec-tag{position:absolute;top:-10px;right:10px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:var(--orange);color:#fff;padding:3px 8px;border-radius:999px}
 details.typed{margin-top:14px}details.typed>summary{cursor:pointer;font-size:13px;color:var(--muted);font-weight:600}
 .typed-row{display:flex;gap:8px;margin-top:10px;max-width:460px}
+.typed-field{flex:1;min-width:0;margin:0}
+.choice-availability{margin-top:14px;font-size:13.5px;color:var(--ink-2)}
 .working{position:relative;overflow:hidden}
 .progress{height:4px;background:var(--purple-50);border-radius:99px;overflow:hidden;margin:18px 0 6px}
 .progress span{display:block;width:38%;height:100%;border-radius:99px;background:var(--purple);animation:slide 1.6s ease-in-out infinite}
@@ -301,7 +315,7 @@ ol.icons li::before{content:counter(n);width:26px;height:26px;border-radius:8px;
 ul.kill{list-style:none;padding:0;margin:0;display:grid;gap:12px}
 ul.kill li{display:grid;grid-template-columns:26px 1fr;gap:12px;color:var(--ink-2);font-size:14.5px}
 ul.kill li::before{content:"\\00D7";width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:16px;font-weight:800;background:var(--navy);color:#fff}
-.tweaks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.tweaks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px}
 .tweak{padding:16px 18px;border-radius:14px;border:1px solid var(--line);background:var(--bg)}
 .tweak strong{display:block;color:var(--navy);font-size:14.5px;margin-bottom:6px}
 .tweak p{font-size:13.5px;color:var(--ink-2)}
@@ -333,8 +347,22 @@ pre.draft{white-space:pre-wrap;word-break:break-word;font:inherit;font-size:14.5
 .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .fingerprint{font-size:12.5px;color:var(--muted)}
 
-@media(prefers-reduced-motion:reduce){main{animation:none}*{transition:none!important;animation-duration:.01ms!important}}
-@media(max-width:560px){.wrap{padding:0 16px}main{padding-top:24px}.composer,.decision,.card{padding:20px}}
+.wrap *{min-width:0}
+.table-wrap{max-width:100%}
+@media(prefers-reduced-motion:reduce){
+@view-transition{navigation:none}
+*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+::view-transition-old(root),::view-transition-new(root){animation:none!important}
+}
+@media(max-width:560px){
+.wrap{padding-left:16px;padding-right:16px}
+main{padding-top:24px}
+.composer,.decision,.card{padding:20px}
+.choices{grid-template-columns:1fr}
+.tiles{grid-template-columns:1fr!important}
+.row>*{min-width:0!important;max-width:100%}
+.brief-table th{width:90px;padding-right:12px}
+}
 """
 
 
@@ -347,19 +375,22 @@ def page(title: str, body: str, *, refresh: int | None = None, model: str = "", 
     chip = ""
     if model:
         dot = "dot" if model_ready is not False else "dot off"
-        chip = f'<a class="chip" href="/status" title="Active local model"><span class="{dot}"></span>{esc(model)}</a>'
+        status = "Local model unavailable" if model_ready is False else ("Local model ready" if model_ready else "Local model")
+        chip = (f'<a class="chip" href="/status" aria-label="{status}: {esc(model)}">'
+                f'<span class="{dot}" aria-hidden="true"></span>{esc(model)}</a>')
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">{meta}'
         f"<title>{esc(title)} · Foundry</title><style>{CSS}</style></head>"
         f'<body class="{"live" if refresh else ""}">'
+        '<a class="skip-link" href="#main-content">Skip to main content</a>'
         '<header class="topbar"><div class="wrap">'
         '<a class="brand" href="/">'
         '<img class="brand-logo" src="/static/brand/logo.png" alt="Foundry" width="173" height="40"></a>'
-        f'<nav class="nav">{chip}<a href="/#projects">Projects</a><a href="/status">System status</a>'
+        f'<nav class="nav" aria-label="Primary">{chip}<a href="/#projects">Projects</a><a href="/status">System status</a>'
         '<a class="cta" href="/#new">New idea</a></nav>'
         "</div></header>"
-        f'<main><div class="wrap">{body}</div></main>'
+        f'<main id="main-content" tabindex="-1"><div class="wrap">{body}</div></main>'
         '<footer class="site-foot"><div class="wrap">'
         f"<strong>{esc(SLOGAN)}</strong>"
         "<span>Runs on your machine with an open model. No account, no payments.</span>"
@@ -426,10 +457,9 @@ CHOICE_TEXT = {
 
 def choice_buttons(project_id: str, choices: Iterable[str], allowed: tuple[str, ...], recommended: str = "",
                    action: str = "decide", typed: bool = True) -> str:
+    available = tuple(dict.fromkeys(choice for choice in choices if choice in allowed and choice in CHOICE_TEXT))
     buttons = ""
-    for choice in choices:
-        if choice not in allowed:
-            continue
+    for choice in available:
         label, hint = CHOICE_TEXT[choice]
         css = {"continue": "primary", "stop": "stop"}.get(choice, "")
         rec = choice == recommended
@@ -437,12 +467,19 @@ def choice_buttons(project_id: str, choices: Iterable[str], allowed: tuple[str, 
         sr = '<span class="sr"> (recommended)</span>' if rec else ""
         buttons += (f'<button class="choice {css}{" is-rec" if rec else ""}" name="choice" value="{choice}" type="submit">'
                     f"{tag}<strong>{label}{sr}</strong><small>{hint}</small></button>")
-    out = (f'<form method="post" action="/projects/{esc(project_id)}/{action}">'
-           f'<div class="choices">{buttons}</div></form>')
-    if typed:
+    labels = [CHOICE_TEXT[choice][0] for choice in available]
+    availability = ("Available choices: " + ", ".join(labels) + ". Other choices are unavailable at this step."
+                    if available else "No choices are available at this step.")
+    out = f'<p class="choice-availability">{esc(availability)}</p>'
+    if available:
+        out += (f'<form method="post" action="/projects/{esc(project_id)}/{esc(action)}">'
+                f'<div class="choices">{buttons}</div></form>')
+    if typed and available:
+        placeholder = ", ".join(label.lower() for label in labels)
         out += (f'<details class="typed"><summary>Or type your choice</summary>'
                 f'<form class="typed-row" method="post" action="/projects/{esc(project_id)}/decide">'
-                '<input type="text" name="reply" placeholder="continue, repeat, go back or stop">'
+                '<label class="typed-field"><span class="sr">Your choice</span>'
+                f'<input type="text" name="reply" placeholder="{esc(placeholder)}"></label>'
                 '<button class="btn" type="submit">Send</button></form></details>')
     return out
 

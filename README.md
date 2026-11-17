@@ -22,6 +22,8 @@ Then open http://localhost:8000.
 
 The first start downloads the open-weight model (`qwen3.5:9b`, about 7.6 GB) in the background. The page says the model is not ready until the download finishes. No API key or account is needed. Enter a founder brief on the home page; `/status` shows live checks and what is mocked.
 
+On a project page, open **Evidence & activity** to inspect sourced claims and their supporting quotes, assumptions, demand results, approval statuses and the decision timeline. **Download project report** saves an internal Markdown snapshot of those records without running the model or approving or publishing anything. The report includes only that project's records, not approval tokens. Navigation remains available on mobile; keyboard users can skip straight to the main content.
+
 Other commands:
 
 ```bash
@@ -40,6 +42,7 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Founder brief intake; physical goods and other excluded product types are rejected immediately, before any research | **Working** | `agents/intake.py`, `app.py` |
 | Web search (self-hosted SearXNG, no key) and page fetch | **Working** | `tools.py`, `searxng/` |
 | Evidence store: a claim is sourced only if its page was fetched and contains the quote, otherwise `ASSUMPTION` | **Working** | `evidence.py` |
+| Project Evidence & activity workspace and internal Markdown report download: project-scoped claims, demand results, approval statuses and decisions, without model calls or approval side effects | **Working** | `app.py` |
 | Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script; schema checks reject ambiguous recommendations and common hypothetical or product-pitch questions | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
 | Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
 | Phase 2 Validate: Lean Canvas (each box sourced or `ASSUMPTION`), landing page and invite post for approval, demand target fixed before the test, STOP below half the target | **Working** | `agents/strategist.py`, `workflow.py` |
