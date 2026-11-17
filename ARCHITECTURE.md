@@ -47,10 +47,17 @@ Each phase lists its agents, tools, method and output. Output files go to `outpu
 
 ### Phase 3: Build
 
-- **Core step:** build the product.
-- **Agents:** `agents/builder.py`.
-- **Tools:** file tools; a sandboxed test runner (separate container, no network, CPU and memory limits, read-only root).
-- **Method:** propose a product format and stack for approval, scaffold a minimum version, write tests and user docs, run the tests in the sandbox. Placeholder content is labelled `MOCKED`. Deploying is a proposed action.
+**Status: `STUBBED`** (designed, not built in the prototype).
+
+- **Core step:** build the product: a tested minimum version with user docs.
+- **Agents:** `agents/builder.py` (plans and writes the product), with the critic reviewing the plan.
+- **Tools:** file tools limited to the project's own workspace; a sandboxed test runner (separate container, no network, CPU and memory limits, read-only root, time limit); the evidence store.
+- **Method:**
+  1. *MVP plan.* From the Validate result and the canvas, the builder proposes the smallest product that tests the riskiest assumption: its format (template pack, short course, small web tool), what is in and out, and the user docs. The critic lists what the plan leaves untested. The founder approves the plan before anything is built.
+  2. *Build.* The builder writes the product files and the tests that define "works" for this product: for software, unit tests; for a course or template pack, a checklist test (every promised module exists, links resolve, no placeholder text left). Example or sample content is labelled `MOCKED` until the founder replaces it.
+  3. *Test.* The sandbox runs the tests and returns a report with each test's result. Agent text may not say the product works unless the runner's report says so.
+  4. *User docs.* A short guide for buyers: what the product does and does not do, how to start, how to get help.
+- **Gate:** tests pass, plus the founder's review. A failed test recommends REPEAT with the failing tests listed; a plan the founder rejects goes back to step 1. If the product cannot be built within the founder's budget and time, the system recommends going back to Validate or stopping. Deploying anything is a `deploy` action for approval.
 - **Output:** `phase3_step1_mvp_plan.md`, `phase3_step2_test_report.md`, `phase3_gate_decision.md`.
 
 ### Phase 4: Commercial setup
@@ -72,10 +79,17 @@ Each phase lists its agents, tools, method and output. Output files go to `outpu
 
 ### Phase 6: Operate and learn
 
-- **Core step:** none.
+**Status: `STUBBED`** (designed, not built in the prototype).
+
+- **Core step:** none in the problem statement; this phase closes the loop.
 - **Agents:** `agents/operator.py`.
-- **Method:** draft support replies for the founder to send, summarise metrics the founder provides, and write a persevere-or-pivot memo with the evidence for each option.
-- **Output:** `phase6_step1_pivot_memo.md`.
+- **Tools:** the evidence store, the approval queue, and figures the founder enters or imports as a file (sales count, refunds, support questions, traffic). Foundry connects to no store or payment account.
+- **Method:**
+  1. *Support.* For each customer question the founder pastes in, the operator drafts a reply in the founder's voice. Each reply is a `support_reply` action: the founder approves the exact text and sends it. Replies never promise results, offer refunds on the founder's behalf, or claim an action happened.
+  2. *Metrics.* The operator summarises the founder's figures against targets set before launch (for example a conversion rate or a refund rate). Numbers the founder did not provide are not estimated; missing data is listed as missing.
+  3. *Persevere or pivot memo.* The memo gives the evidence for and against each option (persevere, pivot to a narrower customer or a different format, stop) and recommends one with a stated confidence. Kill criteria from Discover are checked again here.
+- **Gate:** the founder chooses persevere, pivot back to an earlier phase, or stop. The choice is logged with `approved_by: "founder"`.
+- **Output:** `phase6_step1_pivot_memo.md`, plus approved support replies as copy-ready files.
 
 ## Gates
 
