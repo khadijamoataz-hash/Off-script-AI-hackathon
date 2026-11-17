@@ -1,6 +1,6 @@
 services:
   ollama:
-    image: ollama/ollama:0.40.16
+    image: ollama/ollama:latest
     # Not published to the host: avoids a port clash if Ollama already runs locally.
     volumes:
       - ollama_data:/root/.ollama
@@ -13,7 +13,7 @@ services:
   # One-shot: downloads the open-weight model into the shared volume (several GB on first run,
   # instant afterwards). The app starts without waiting and shows "model still downloading".
   model-pull:
-    image: ollama/ollama:0.40.16
+    image: ollama/ollama:latest
     depends_on:
       ollama:
         condition: service_healthy
@@ -25,7 +25,7 @@ services:
   # Self-hosted metasearch: gives the agents web search with no API key and no account.
   # Not published to the host.
   searxng:
-    image: searxng/searxng:2026.11.17-cf3c20177
+    image: searxng/searxng:latest
     environment:
       # Session-signing key for a container that is only reachable inside this compose network.
       - SEARXNG_SECRET=${SEARXNG_SECRET:-foundry-local-search-container}
