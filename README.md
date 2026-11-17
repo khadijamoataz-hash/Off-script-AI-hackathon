@@ -34,20 +34,20 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
 | Phase 2 Validate: Lean Canvas (each box sourced or `ASSUMPTION`), landing page and invite post for approval, demand target fixed before the test, STOP below half the target | **Working** | `agents/strategist.py`, `workflow.py` |
 | Phase 3 Build: build the product | **STUBBED** | not built |
-| Phase 4 Commercial setup: price and policies | **STUBBED** | not built |
-| Phase 5 Launch: store page and launch post drafts, queued for approval; opens only after Validate passes | **Working**; Build and Commercial setup are stubbed, so drafts use the Discover and Validate results | `agents/launcher.py`, `workflow.py` |
+| Phase 4 Commercial setup: two or three price options with comparable prices (sourced or `ASSUMPTION`), drafts of the terms, privacy and refund policies, each approved by the founder as a `sign` action; Launch opens only when all three are approved | **Working** | `agents/pricing.py`, `workflow.py` |
+| Phase 5 Launch: store page and launch post drafts, queued for approval; opens only after Commercial setup passes | **Working**; Build is stubbed, so drafts use the Discover, Validate and Commercial setup results | `agents/launcher.py`, `workflow.py` |
 | Approve or reject the exact text in the browser; approved text is exported as a copy-ready file | **Working** | `app.py`, `approval.py` |
 | Phase 5 Launch: automatic delivery to buyers | **MOCKED** | `delivery.py`: simulated order, no payment |
 | Phase 6 Operate and learn | **STUBBED** | not built |
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (no model needed) | **Working** | `guardrails.py` |
-| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working**: 50 of 50 eval cases in each of 3 repeated runs with `qwen3.5:9b` (34 attacks blocked, 16 normal requests and briefs allowed, including Arabic) | `guardrails.py`, `llm.py`, `evals/results.md` |
+| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working**: 51 of 51 eval cases in each of 3 repeated runs with `qwen3.5:9b` (34 attacks blocked, 17 normal requests, briefs and policy drafts allowed, including Arabic) | `guardrails.py`, `llm.py`, `evals/results.md` |
 | Local model adapter (Ollama) | **Working** | `llm.py` |
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
 
-Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phases 3 and 4 are stubbed, a project that passes Validate stays recorded at Build while Launch drafting runs. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
+Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phase 3 is stubbed, a project that passes Validate stays recorded at Build while Commercial setup and Launch drafting run. The policy drafts are not legal advice and say so. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
 
 ## Architecture
 
@@ -83,6 +83,6 @@ Measured on the committed demo run (`outputs/`, `decision_log.json`): 10 agent m
 ## How the project stays alive after the hackathon
 
 - **Maintainers:** the Foundry team maintains the repository under Apache-2.0 and reviews contributions.
-- **Roadmap:** agents for the phases that are still `STUBBED` (Build, Commercial setup, Operate), a stronger guardrail model and wider evals, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Roadmap:** agents for the phases that are still `STUBBED` (Build, Operate), a stronger guardrail model and wider evals, then community playbooks per product type. See the roadmap in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Community:** contributed agents, prompts (`prompts/`) and guardrail evals (`evals/`). The guardrail evals are public so anyone can check the safety rules.
 - **Funding (`ASSUMPTION`, not yet validated):** the core stays free and self-hosted. Possible income is a hosted version for founders who do not want to run a model, and licences and support for incubators and university venture programmes. Safety rules and core features are never paywalled.

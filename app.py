@@ -56,7 +56,8 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
     ("Phase 1 Discover: opportunities, critic review, interview script", "Working", "agents/researcher.py, agents/critic.py, workflow.py"),
     ("Step gates in the browser: continue, repeat, go back, stop", "Working", "app.py, workflow.py"),
     ("Phase 2 Validate: Lean Canvas, landing page, demand target fixed in advance, STOP on weak demand", "Working", "agents/strategist.py, workflow.py"),
-    ("Phase 3 Build, 4 Commercial setup, 6 Operate", "STUBBED", "agents not built"),
+    ("Phase 4 Commercial setup: price options with sourced comparables, terms, privacy and refund policy drafts approved as sign actions", "Working", "agents/pricing.py, workflow.py"),
+    ("Phase 3 Build, 6 Operate", "STUBBED", "agents not built"),
     ("Phase 5 Launch: store page and launch post drafts into the approval queue", "Working", "agents/launcher.py, workflow.py"),
     ("Approving or rejecting the exact text in the browser, export as copy-ready text", "Working", "app.py, approval.py"),
     ("Delivery to buyers", "MOCKED", "delivery.py: simulated order, idempotent delivery, refund revokes access"),
@@ -284,12 +285,16 @@ def _start_step(project_id: str, step: str) -> None:
                 wf.run_discover_step2(project_id)
             elif step == "validate":
                 wf.run_validate_step1(project_id)
+            elif step == "commercial":
+                wf.run_commercial_setup(project_id)
             else:
                 wf.run_launch_drafts(project_id)
         except Exception as exc:  # noqa: BLE001 - shown to the founder with a retry button
             failure = f"{type(exc).__name__}: {exc}"
             if step == "launch":
                 wf._set_state(project_id, launch_stage="failed", error=failure)
+            elif step == "commercial":
+                wf._set_state(project_id, commercial_stage="failed", error=failure)
             elif step == "validate":
                 wf._set_state(project_id, validate_stage="ready", error=failure)
             else:
@@ -303,6 +308,8 @@ def _start_step(project_id: str, step: str) -> None:
 
     if step == "launch":
         wf._set_state(project_id, launch_stage="starting", error=None)
+    elif step == "commercial":
+        wf._set_state(project_id, commercial_stage="drafting", error=None)
     elif step == "validate":
         wf._set_state(project_id, validate_stage="drafting", error=None)
     else:
@@ -418,8 +425,14 @@ def _stage_label(state: dict[str, Any], status: str) -> str:
         return labels[awaiting]
     if str(state.get("launch_stage", "")).startswith("gate decided"):
         return "Launch reviewed"
+    if state.get("commercial_passed"):
+        return "Policies approved; launch drafts"
+    if state.get("commercial_stage") == "awaiting approvals":
+        return "Waiting for you to review the policies"
+    if str(state.get("commercial_stage", "")).startswith("gate decided"):
+        return "Commercial setup reviewed"
     if state.get("validate_passed"):
-        return "Validate passed; launch drafts"
+        return "Validate passed; price and policies next"
     if state.get("validate_stage") in ("awaiting_results", "results_recorded"):
         return "Waiting for your demand test results"
     if state.get("discover_approved"):
@@ -529,14 +542,16 @@ def _stepper(state: dict[str, Any], status: str) -> str:
     approved = bool(state.get("discover_approved"))
     launch_done = str(state.get("launch_stage", "")).startswith("gate decided")
     passed = bool(state.get("validate_passed"))
+    commercial = bool(state.get("commercial_passed"))
     step1_done = approved or awaiting in {"run_step2", "phase_gate"} or state.get("stage") == "drafting the interview script"
     items = [
         ("Brief", "done"),
         ("1 Discover: opportunities", "done" if step1_done else "now"),
         ("1 Discover: interview script", "done" if approved else ("now" if step1_done else "")),
         ("2 Validate: demand test", "done" if passed else ("now" if approved else "")),
-        ("3 Build", "stub"), ("4 Commercial setup", "stub"),
-        ("5 Launch: drafts and approval", "done" if launch_done else ("now" if passed else "")),
+        ("3 Build", "stub"),
+        ("4 Commercial setup: price and policies", "done" if commercial else ("now" if passed else "")),
+        ("5 Launch: drafts and approval", "done" if launch_done else ("now" if commercial else "")),
         ("6 Operate", "stub"),
     ]
     if status == "stopped":
@@ -545,8 +560,10 @@ def _stepper(state: dict[str, Any], status: str) -> str:
 
 
 def _running_kind(state: dict[str, Any]) -> str:
-    if state.get("validate_passed"):
+    if state.get("commercial_passed"):
         return "launch"
+    if state.get("validate_passed"):
+        return "commercial"
     if state.get("discover_approved"):
         return "validate"
     if state.get("stage") == "drafting the interview script":
@@ -602,7 +619,8 @@ def project_page(project_id: str, unclear: str = "") -> str:
 
     if project_id in _running:
         kind = _running_kind(state)
-        stage = {"launch": state.get("launch_stage"), "validate": state.get("validate_stage")}.get(kind, state.get("stage"))
+        stage = {"launch": state.get("launch_stage"), "validate": state.get("validate_stage"),
+                 "commercial": state.get("commercial_stage")}.get(kind, state.get("stage"))
         parts.append(ui.working_card(str(stage or "starting"), _running_kind(state)))
         return _page(project.name, "".join(parts) + footer, refresh=3)
 
@@ -664,8 +682,10 @@ def project_page(project_id: str, unclear: str = "") -> str:
                      '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>')
         latest = "phase2_gate_decision.md" if _own_output(project_id, "phase2_gate_decision.md") else "phase1_gate_decision.md"
         parts.append(_doc(project_id, latest))
-    elif state.get("validate_passed"):
+    elif state.get("commercial_passed"):
         parts.append(_launch_section(wf, project, state))
+    elif state.get("validate_passed"):
+        parts.append(_commercial_section(wf, project, state))
     elif state.get("discover_approved"):
         parts.append(_validate_section(wf, project, state))
     return _page(project.name, "".join(parts) + footer)
@@ -682,10 +702,10 @@ def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any])
     project_id = project.id
     actions = wf.launch_actions(project_id)
     stub = ('<div class="notice" style="margin-bottom:16px"><span class="icon orange">i</span><p><strong>STUBBED:</strong> '
-            "Build and Commercial setup are designed but not built in this prototype, so launch drafts are "
-            "based on the Discover option and the Validate result only.</p></div>")
+            "Build is designed but not built in this prototype, so launch drafts are "
+            "based on the Discover option, the Validate result and your approved policies.</p></div>")
     if not actions:
-        return (stub + '<section class="decision"><p class="kicker">Next step</p><h2>Validate passed</h2>'
+        return (stub + '<section class="decision"><p class="kicker">Next step</p><h2>Price and policies approved</h2>'
                 '<p class="hint">Next, the launch writer drafts a store page and launch posts. Each draft is checked by the '
                 "guardrails and then waits for your approval. Nothing is published by Foundry.</p>"
                 f'<form method="post" action="/projects/{e(project_id)}/run/launch" style="margin-top:18px">'
@@ -723,6 +743,56 @@ def _launch_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any])
                  + _doc(project_id, "payment_test_log.md", "Delivery test log (MOCKED, no payment took place)", open_=False)
                  + _doc(project_id, "phase1_step2_interview_script.md", "Interview script", open_=False)
                  + _research_fold(wf, project, state) + "</div>")
+    return "".join(parts)
+
+
+def _commercial_section(wf: Workflow, project: ProjectRecord, state: dict[str, Any]) -> str:
+    project_id = project.id
+    stage = str(state.get("commercial_stage") or "")
+    stub = ('<div class="notice" style="margin-bottom:16px"><span class="icon orange">i</span><p><strong>STUBBED:</strong> '
+            "Phase 3 Build is designed but not built in this prototype. Commercial setup works from the "
+            "Discover option and your Validate result. Foundry has no payment code: you sell through your own "
+            "payment provider.</p></div>")
+    if stage.startswith("gate decided"):
+        choice = stage.split(":")[-1].strip()
+        return (stub + '<section class="decision"><p class="kicker">Done</p><h2>Commercial setup finished</h2>'
+                f'<p style="margin-top:12px">Your decision: {ui.pill(choice.upper(), "solid")}.</p>'
+                '<a class="btn btn-primary" href="/#new" style="margin-top:18px">Start a new brief</a></section>'
+                + _doc(project_id, "phase4_gate_decision.md", "Gate decision"))
+    actions = wf.commercial_actions(project_id)
+    if not actions and stage != "awaiting approvals":
+        error = state.get("error") if stage == "failed" else None
+        return (stub + (ui.alert("The step failed.", f"<p>{e(error)}</p>") if error else "")
+                + '<section class="decision"><p class="kicker">Next step</p><h2>Validate passed: set the price and policies</h2>'
+                '<p class="hint">The pricing agent looks up what similar products charge, proposes two or three price '
+                "options, and drafts your terms of service, privacy policy and refund policy. Each policy is checked by "
+                "the guardrails and then waits for your approval. Nothing is published or charged by Foundry.</p>"
+                f'<form method="post" action="/projects/{e(project_id)}/run/commercial" style="margin-top:18px">'
+                '<button class="btn btn-primary btn-lg" type="submit">Draft price options and policies '
+                '<span class="arrow">&rarr;</span></button></form></section>'
+                + _doc(project_id, "phase2_gate_decision.md", "Validate gate decision", open_=False))
+    ready, reason = wf.commercial_check(project_id)
+    pending = sum(1 for a in actions if a.status.value == "pending")
+    parts = [stub, _doc(project_id, "phase4_step1_pricing.md", "Price options"),
+             '<div class="block-head" style="margin-top:20px"><div><p class="kicker">Approval screen</p>'
+             "<h2>Policy drafts: your approval</h2></div></div>"
+             '<p class="muted">Approving a policy is a <code>sign</code> action: it writes the exact text shown to a '
+             "copy-ready file for you to publish yourself. These drafts are not legal advice.</p>"]
+    for blocked in state.get("commercial_blocked") or []:
+        parts.append('<div style="margin-top:14px">'
+                     + ui.alert("One policy was blocked by the guardrails and was not queued.", f"<p>{e(blocked)}</p>") + "</div>")
+    parts.append(_approval_cards(project_id, actions))
+    if pending:
+        parts.append(f'<div class="notice" style="margin-top:16px"><span class="icon purple">{pending}</span><p>'
+                     f'<strong>{pending} polic{"ies" if pending != 1 else "y"} still waiting for you.</strong> '
+                     '<span class="muted">Approve or reject each one to finish this step.</span></p></div>')
+    else:
+        rec = "continue" if ready else "repeat"
+        parts.append('<section class="decision" style="margin-top:20px"><p class="kicker">Your decision</p>'
+                     "<h2>Your decision: Commercial setup</h2>"
+                     f'<p style="margin-top:12px">Foundry recommends {ui.pill(rec.upper(), "solid")} {e(reason)}</p>'
+                     '<p class="hint">Continue is accepted only when all three policies are approved. Repeat drafts new policies.</p>'
+                     f"{_choice_buttons(project_id, STEP_CHOICES, rec, action='commercial-gate', typed=False)}</section>")
     return "".join(parts)
 
 
@@ -914,6 +984,15 @@ def validate_gate(project_id: str, choice: str = Form(...)):
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
+@app.post("/projects/{project_id}/commercial-gate")
+def commercial_gate(project_id: str, choice: str = Form(...)):
+    try:
+        get_workflow().decide_commercial_gate(project_id, choice)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
 @app.post("/projects/{project_id}/launch-gate")
 def launch_gate(project_id: str, choice: str = Form(...)):
     try:
@@ -952,8 +1031,13 @@ def decide(project_id: str, choice: str = Form(""), reply: str = Form("")):
 def run_step(project_id: str, step: str):
     wf = get_workflow()
     state = wf.get_state(project_id)
+    if step == "commercial":
+        if not state.get("validate_passed") or state.get("commercial_stage") not in (None, "ready", "failed"):
+            raise HTTPException(status_code=409, detail="Commercial setup cannot be started now.")
+        _start_step(project_id, "commercial")
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
     if step == "launch":
-        if not state.get("validate_passed") or wf.launch_actions(project_id):
+        if not state.get("commercial_passed") or wf.launch_actions(project_id):
             raise HTTPException(status_code=409, detail="Launch drafts cannot be started now.")
         _start_step(project_id, "launch")
         return RedirectResponse(f"/projects/{project_id}", status_code=303)

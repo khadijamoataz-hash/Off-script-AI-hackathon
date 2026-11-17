@@ -26,7 +26,7 @@ flowchart TD
 
 ## Phases
 
-Each phase lists its agents, tools, method and output. Output files go to `outputs/` as `phase<N>_step<M>_<name>` and `phase<N>_gate_<name>`. Phase 1 (Discover) and the Phase 5 drafting, approval and mocked delivery steps are **Working**; the agents for Phases 2, 3, 4 and 6 are **STUBBED**. See Built vs. stubbed.
+Each phase lists its agents, tools, method and output. Output files go to `outputs/` as `phase<N>_step<M>_<name>` and `phase<N>_gate_<name>`. Phase 1 (Discover), Phase 2 (Validate), Phase 4 (Commercial setup) and the Phase 5 drafting, approval and mocked delivery steps are **Working**; the agents for Phases 3 and 6 are **STUBBED**. See Built vs. stubbed.
 
 ### Phase 1: Discover
 
@@ -56,8 +56,9 @@ Each phase lists its agents, tools, method and output. Output files go to `outpu
 
 - **Core step:** set the price and policies.
 - **Agents:** `agents/pricing.py`.
-- **Tools:** evidence store, file tools.
-- **Method:** offer two or three pricing options with reasoning. Competitor prices are sourced; willingness to pay is an `ASSUMPTION` until tested. Draft terms, privacy and refund policies as drafts for the founder to review, marked as not legal advice. Publishing policies or accepting a platform's terms is a `sign` action that needs approval. No payments of any kind.
+- **Tools:** web search and page fetch (what similar products charge), evidence store, approval queue.
+- **Method (Working):** opens only after the Validate evidence gate passes. The agent offers two or three price options with reasoning and names the one it recommends. Comparable prices are claims: sourced only if the quote is on a page fetched in the run, otherwise `ASSUMPTION`; willingness to pay is always an `ASSUMPTION` with a cheap test proposed. It drafts the terms, privacy and refund policies with placeholders such as [BUSINESS NAME], each marked as not legal advice. Each policy is queued as a `sign` action; approval exports the exact text as a copy-ready file. No payments of any kind: the founder sells through their own provider.
+- **Gate:** all three policies approved by the founder; a rejected or blocked policy means REPEAT (new drafts). Launch cannot start until this gate passes.
 - **Output:** `phase4_step1_pricing.md`, `phase4_step2_policies.md`, `phase4_gate_decision.md`.
 
 ### Phase 5: Launch
@@ -90,7 +91,7 @@ Every step ends with a gate. After each step the system shows a summary, its rec
 | Discover | Founder approves the sharpened idea |
 | Validate | Evidence target reached, plus founder approval. Below target, continue is refused and the refusal is logged |
 | Build | Tests pass, plus founder review |
-| Commercial setup | Founder approves pricing and policy drafts |
+| Commercial setup | All three policy drafts (terms, privacy, refund) approved by the founder, plus the founder's choice; otherwise REPEAT is recommended and continue is refused |
 | Launch | No draft left unreviewed, at least one approved, plus founder approval |
 | Operate and learn | Founder chooses the outcome from the memo |
 
@@ -139,25 +140,26 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 | Phase 1 Discover agents and step runner (`agents/researcher.py`, `agents/critic.py`, `workflow.py`) | Working |
 | Step gates and approval screen in the browser (`app.py`) | Working |
 | Phase 2 Validate: Lean Canvas, demand test, landing page, evidence gate (`agents/strategist.py`, `workflow.py`) | Working |
-| Phase 5 Launch drafts into the approval queue (`agents/launcher.py`) | Working; opens after Validate passes |
+| Phase 4 Commercial setup: price options, policy drafts as `sign` actions, gate (`agents/pricing.py`, `workflow.py`) | Working; opens after Validate passes |
+| Phase 5 Launch drafts into the approval queue (`agents/launcher.py`) | Working; opens after Commercial setup passes |
 | Delivery (`delivery.py`) | MOCKED |
 | Decision log (`decision_log.py`) | Working |
 | Approval queue and tokens (`approval.py`) | Working |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (`guardrails.py`) | Working; keyword rules are English only |
 | Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on the founder brief and on drafts entering the approval queue; a small local model, so not perfect (see `evals/results.md`) |
 | Model adapter (`llm.py`) | Working |
-| Phase 3 Build, Phase 4 Commercial setup, Phase 6 Operate agents | STUBBED |
+| Phase 3 Build, Phase 6 Operate agents | STUBBED |
 | Sandboxed test runner, CLI | STUBBED |
 | Posting connectors | STUBBED by design (copy-ready text only) |
 | Payments, sale to cash | Not built; no payment code |
 
 ## Roadmap
 
-Done in the prototype: brief intake with immediate rejection of non-digital products; Discover with fetched sources and step gates in the browser; Validate with a Lean Canvas, landing page, a demand target fixed in advance and STOP on weak demand; the approval screen with Launch drafts and `MOCKED` delivery; guardrails with a fail-closed model classifier and public evals.
+Done in the prototype: brief intake with immediate rejection of non-digital products; Discover with fetched sources and step gates in the browser; Validate with a Lean Canvas, landing page, a demand target fixed in advance and STOP on weak demand; Commercial setup with price options and policy drafts approved as `sign` actions; the approval screen with Launch drafts and `MOCKED` delivery; guardrails with a fail-closed model classifier and public evals.
 
 Next:
 
 1. Speed: shorter agent outputs and parallel checks, so a full run fits in about three minutes on a laptop.
 2. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
-3. Build, Commercial setup and Operate agents.
+3. Build and Operate agents.
 4. After the hackathon: community playbooks per product type, more search sources, and a hosted option for founders who cannot run a model.

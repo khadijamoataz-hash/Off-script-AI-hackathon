@@ -1,4 +1,5 @@
-"""Step runner for the phases that are built: Phase 1 (Discover) and the Phase 5 (Launch)
+"""Step runner for the phases that are built: Phase 1 (Discover), Phase 2 (Validate),
+Phase 4 (Commercial setup: price options and policy drafts) and the Phase 5 (Launch)
 drafting, approval and MOCKED delivery steps.
 
 A step runs its agents, records evidence, writes its output file to `outputs/`, logs every
@@ -21,6 +22,7 @@ from typing import Any, Callable
 
 from agents.critic import CriticOutput, critique
 from agents.launcher import LaunchDrafts, draft_launch, render_store_page
+from agents.pricing import POLICIES, PricingOutput, render_policy, set_price_and_policies
 from agents.strategist import CANVAS_BOXES, StrategyOutput, design_business, render_landing_page
 from agents.intake import EXCLUDED_LABELS, BriefScreen, FounderBrief, screen_brief
 from agents.researcher import (
@@ -403,11 +405,11 @@ class Workflow:
         )
 
     def _gather_sources(
-        self, project_id: str, brief: FounderBrief, queries: list[str]
+        self, project_id: str, brief: FounderBrief, queries: list[str], *,
+        phase: str = PhaseName.DISCOVER.value, include_brief_urls: bool = True,
     ) -> tuple[list[FetchedPage], str]:
         """Search, then fetch founder-supplied URLs first and the top results after."""
-        phase = PhaseName.DISCOVER.value
-        urls: list[str] = list(brief.source_urls)
+        urls: list[str] = list(brief.source_urls) if include_brief_urls else []
         notes: list[str] = []
         for query in queries[:3]:
             if not self._tool_allowed(project_id, "web_search", {"query": query}):
@@ -795,6 +797,157 @@ class Workflow:
         self._write(project.id, "phase2_gate_decision.md", render_validate_gate(
             project, state, check, founder_decision))
 
+    # ------------------------------------------------------------------ commercial setup
+
+    def run_commercial_setup(self, project_id: str) -> dict[str, Any]:
+        """Phase 4: price options with sourced comparables, and policy drafts. Each policy is a
+        `sign` action in the approval queue. No payment code exists; nothing is charged."""
+        project = self.orch._require_project(project_id)
+        artifact = project.phase_artifacts.get(PhaseName.DISCOVER.value)
+        state = self.get_state(project_id)
+        if not artifact or not state.get("validate_passed"):
+            raise WorkflowError(
+                "Commercial setup needs a passed Validate gate: real demand at or above the target."
+            )
+        if state.get("commercial_stage") not in (None, "ready", "drafting", "starting", "failed"):
+            raise WorkflowError("This Commercial setup step has already run.")
+        phase = PhaseName.COMMERCIAL.value
+        started = time.monotonic()
+        self._set_state(project_id, commercial_stage="drafting", error=None)
+        option = Opportunity(**artifact["recommended_option"])
+        brief = self._brief(project)
+
+        new_pages, notes = self._gather_sources(
+            project_id, brief,
+            [f"{option.title} price", f"{option.product[:80]} pricing"],
+            phase=phase, include_brief_urls=False,
+        )
+        known = {p.url for p in new_pages}
+        earlier = [p for p in self.ledger.list_fetches(project_id=project_id) if p.url not in known]
+        pages = (new_pages + earlier)[:MAX_PAGES + 2]
+        keywords = {"price", "pricing", "month", "year", "plan", "plans", "free", "once", "lifetime"}
+        keywords |= set(re.findall(r"[a-z]{4,}", option.title.lower()))
+        excerpts = [select_excerpt(page.text, keywords) for page in pages]
+
+        target = state.get("validate_target") or {}
+        results = state.get("validate_results") or []
+        validate_result = (
+            f"Target fixed in advance: {target.get('target', '?')} {target.get('what', '')}. "
+            "Recorded: " + "; ".join(f"{r['count']} {r['kind']}" for r in results)
+        )
+        priced = set_price_and_policies(self.adapter, brief, option, validate_result, pages, excerpts)
+        self._add_usage(project_id, priced)
+        out = priced.output
+        claims: list[Claim] = []
+        for comp in out.comparables:
+            url = None
+            if comp.source_number is not None and 1 <= comp.source_number <= len(pages):
+                url = pages[comp.source_number - 1].url
+            claims.append(self.ledger.add_claim(
+                f"{comp.product} is priced at {comp.price}.", project_id=project_id,
+                linked_phase=phase, source_url=url, quote=comp.quote,
+            ))
+        facts = [c for c in claims if c.claim_type == ClaimType.FACT]
+        self.log.append(
+            action="set_price_and_policies", agent="pricing", actor="agent_proposal", phase=phase,
+            decision=(
+                f"Proposed {len(out.options)} price options (recommended: {out.recommended_option}), "
+                f"{len(claims)} comparable prices ({len(facts)} sourced, {len(claims) - len(facts)} "
+                "labelled ASSUMPTION) and drafts of the terms, privacy and refund policies."
+            ),
+            outcome="proposed", sources=sorted({c.source_url for c in facts if c.source_url}),
+            model=priced.model, cost=0, project_id=project_id,
+            evidence_ids=[c.id for c in claims], metadata={"tokens": priced.tokens},
+        )
+
+        queued: list[str] = []
+        blocked: list[str] = []
+        for key, label in POLICIES:
+            try:
+                queued.append(self.orch.outbox.propose_action(
+                    project_id=project_id, phase=phase, step=2, action_type="sign",
+                    target=key, title=f"Publish the {label.lower()}",
+                    body=render_policy(label, getattr(out, key)),
+                ).id)
+            except PolicyViolationError as exc:
+                blocked.append(f"{label}: {exc}")
+
+        files = [
+            self._write(project_id, "phase4_step1_pricing.md", self._scrub(project_id, phase, render_pricing(
+                project, out, claims, notes, iteration=len(state.get("commercial_rounds", [])) + 1))),
+            self._write(project_id, "phase4_step2_policies.md", render_policies(out, blocked)),
+        ]
+        self.orch.save_phase_artifact(
+            project_id, PhaseName.COMMERCIAL, {"pricing": out.model_dump()},
+            evidence_ids=[c.id for c in claims], agent="pricing", model=priced.model,
+        )
+        self._write_commercial_gate(project_id, founder_decision=None)
+        return self._set_state(
+            project_id, commercial_stage="awaiting approvals", commercial_actions=queued,
+            commercial_blocked=blocked, files=state.get("files", []) + files,
+            commercial_rounds=state.get("commercial_rounds", []) + [queued],
+            seconds_commercial=round(time.monotonic() - started, 1),
+        )
+
+    def commercial_actions(self, project_id: str) -> list[ProposedAction]:
+        """The policy drafts of the latest Commercial setup round."""
+        ids = set(self.get_state(project_id).get("commercial_actions") or [])
+        return [a for a in self.orch.outbox.list_actions(project_id=project_id) if a.id in ids]
+
+    def commercial_check(self, project_id: str) -> tuple[bool, str]:
+        actions = self.commercial_actions(project_id)
+        state = self.get_state(project_id)
+        pending = [a for a in actions if a.status == ActionStatus.PENDING]
+        approved = [a for a in actions if a.status in {ActionStatus.APPROVED, ActionStatus.EXECUTED}]
+        missing = len(POLICIES) - len(approved)
+        ready = bool(actions) and not pending and missing == 0
+        reason = (
+            f"{len(approved)} of {len(POLICIES)} policies approved, {len(pending)} not yet reviewed"
+            + (f", {len(state.get('commercial_blocked') or [])} blocked by the guardrails" if state.get("commercial_blocked") else "")
+            + "."
+        )
+        return ready, reason
+
+    def decide_commercial_gate(self, project_id: str, choice: str) -> dict[str, Any]:
+        """Commercial gate: all three policies approved by the founder, plus the founder's choice."""
+        if choice not in STEP_CHOICES:
+            raise WorkflowError(f"Choice must be one of {STEP_CHOICES}.")
+        state = self.get_state(project_id)
+        if state.get("commercial_stage") != "awaiting approvals":
+            raise WorkflowError("No Commercial setup decision is waiting.")
+        ready, reason = self.commercial_check(project_id)
+        if choice == "continue" and not ready:
+            raise WorkflowError(
+                "The Commercial setup gate is not met: the terms, privacy and refund policies must "
+                f"all be approved before selling. {reason} You can repeat the step to get new drafts."
+            )
+        recommendation = "continue" if ready else "repeat"
+        self.log.append(
+            action="commercial_gate", agent="gate", actor="founder_approval",
+            phase=PhaseName.COMMERCIAL.value,
+            decision=f"Founder chose '{choice}' at the Commercial setup gate. {reason}",
+            outcome=choice, sources=[], model=None, cost=0, project_id=project_id,
+            metadata={"system_recommendation": recommendation},
+        )
+        self._write_commercial_gate(project_id, founder_decision=choice)
+        if choice == "continue":
+            return self._set_state(project_id, commercial_stage="gate decided: continue", commercial_passed=True)
+        if choice == "repeat":
+            return self._set_state(project_id, commercial_stage="ready", commercial_actions=[], commercial_blocked=[])
+        if choice == "stop":
+            try:
+                self.orch.decide_gate(project_id, GateOutcome.STOP, founder_approved=True,
+                                      rationale="Stopped at Commercial setup")
+            except OrchestratorError:
+                pass
+        return self._set_state(project_id, commercial_stage=f"gate decided: {choice}")
+
+    def _write_commercial_gate(self, project_id: str, *, founder_decision: str | None) -> None:
+        project = self.orch._require_project(project_id)
+        ready, reason = self.commercial_check(project_id)
+        self._write(project_id, "phase4_gate_decision.md", render_commercial_gate(
+            project, self.commercial_actions(project_id), ready, reason, founder_decision))
+
     # ------------------------------------------------------------------ launch drafts
 
     def run_launch_drafts(self, project_id: str) -> dict[str, Any]:
@@ -806,6 +959,10 @@ class Workflow:
         if not artifact or not state.get("validate_passed"):
             raise WorkflowError(
                 "Launch drafts need a passed Validate gate: real demand at or above the target."
+            )
+        if not state.get("commercial_passed"):
+            raise WorkflowError(
+                "Launch drafts need a passed Commercial setup gate: price options and approved policies."
             )
         phase = PhaseName.LAUNCH.value
         self._set_state(project_id, launch_stage="drafting")
@@ -841,8 +998,8 @@ class Workflow:
         note = (
             "Status: **DRAFT, not published.** Each item waits in the approval queue; the founder "
             "approves or rejects the exact text. Foundry has no posting connector.\n\n"
-            "Phases 2 to 4 are STUBBED in this prototype, so this draft is based on the Discover "
-            "option only. Product details are `ASSUMPTION` until those phases run."
+            "Phase 3 Build is STUBBED in this prototype, so this draft is based on the Discover "
+            "option. Product details are `ASSUMPTION` until the product is built."
         )
         files = [
             self._write(project_id, "phase5_step1_store_page.md",
@@ -931,7 +1088,7 @@ class Workflow:
             "No draft is left unreviewed and at least one is approved. Approved drafts were "
             "exported as copy-ready text for the founder to post; nothing was published by Foundry. "
             "Delivery is `MOCKED` (see `payment_test_log.md`); no payment took place.\n\n"
-            "Phases 2 to 4 are STUBBED in this prototype, so the project's recorded phase is not "
+            "Phase 3 Build is STUBBED in this prototype, so the project's recorded phase is not "
             "advanced by this decision.\n\n"
             "| Draft | Type | Outcome |\n|---|---|---|\n"
             + "\n".join(f"| {_cell(a.title)} | {a.action_type.value} | {a.status.value} |" for a in actions),
@@ -1164,3 +1321,66 @@ def render_validate_gate(
         "evidence gate: the founder can repeat the test, go back to Discover, or stop.",
     ]
     return "\n\n".join(parts)
+
+
+def render_pricing(
+    project: ProjectRecord, out: PricingOutput, claims: list[Claim], notes: str, *, iteration: int = 1
+) -> str:
+    rows = "\n".join(
+        f"| {'**' + _cell(o.name) + '** (recommended)' if o.name.strip().lower() == out.recommended_option.strip().lower() else _cell(o.name)} "
+        f"| ${o.price_usd:,.2f} | {o.billing} | {_cell(o.includes)} | {_cell(o.rationale)} |"
+        for o in out.options
+    )
+    parts = [
+        "# Phase 4, step 1: price options",
+        f"Project `{project.id}`: {project.idea_summary}" + (f" (round {iteration})" if iteration > 1 else ""),
+        "Generated by the pricing agent. These are options for the founder to choose from. Foundry "
+        "takes no payments and has no checkout: the founder sells through their own payment provider.",
+        f"**Recommended option: {out.recommended_option}.** {out.recommendation_reason}",
+        "| Option | Price (USD) | Billing | Includes | Why |\n|---|---|---|---|---|\n" + rows,
+        "## What similar products charge",
+        "A price is Sourced only if the page was fetched in this run and contains the quote.",
+        render_claims(claims) if claims else "No comparable prices were found in the fetched pages.",
+        "## Willingness to pay (`ASSUMPTION`)",
+        out.willingness_to_pay,
+        "## Cheapest test of the price",
+        out.price_test,
+        "No income or sales are estimated or promised here.",
+    ]
+    if notes:
+        parts.append(f"Research notes: {notes}")
+    return "\n\n".join(parts) + "\n"
+
+
+def render_policies(out: PricingOutput, blocked: list[str]) -> str:
+    parts = [
+        "# Phase 4, step 2: policy drafts",
+        "Status: **DRAFT, not published.** Each policy waits in the approval queue as a `sign` "
+        "action; the founder approves or rejects the exact text. This is not legal advice.",
+    ]
+    for key, label in POLICIES:
+        parts.append(f"## {label}\n\n{getattr(out, key).strip()}")
+    if blocked:
+        parts.append("## Blocked by guardrails\n\n" + "\n".join(f"- {b}" for b in blocked))
+    return "\n\n".join(parts) + "\n"
+
+
+def render_commercial_gate(
+    project: ProjectRecord, actions: list[ProposedAction], ready: bool, reason: str,
+    founder_decision: str | None,
+) -> str:
+    recommendation = "CONTINUE" if ready else "REPEAT"
+    return "\n\n".join([
+        "# Phase 4 gate decision: Commercial setup",
+        f"Project `{project.id}`: {project.idea_summary}",
+        f"**System recommendation: {recommendation}.** {reason}",
+        "**Founder decision:** "
+        + (founder_decision.upper() if founder_decision else "pending (waiting for the founder)"),
+        "## What this gate checks",
+        "The founder has chosen a price from the options and approved the exact text of the "
+        "terms, privacy and refund policies. Approving a policy is a `sign` action: Foundry only "
+        "exports the approved text as a copy-ready file for the founder to publish. No payment "
+        "code exists in Foundry; nothing was charged.",
+        "| Policy | Outcome |\n|---|---|\n"
+        + ("\n".join(f"| {_cell(a.title)} | {a.status.value} |" for a in actions) or "| (none queued) | - |"),
+    ]) + "\n"

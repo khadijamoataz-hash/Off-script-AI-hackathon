@@ -256,4 +256,6 @@ Build order:
 | Validate: demand target fixed at the end of Discover, Lean Canvas, landing page and invite post for approval, STOP below half the target | Working |
 | Launch drafts into the approval queue, approval screen, `delivery.py` (`MOCKED`) | Working; opens after Validate passes |
 | Guardrails: secrets detector, keyword backstop, tool allowlist, model classifier failing closed; `evals/` with block and allow cases | Working |
-| Build, Commercial setup, Operate agents; committed demo run | Not built |
+| Commercial setup: price options with sourced comparables, terms, privacy and refund drafts as `sign` approvals; Launch waits for it | Working |
+| Committed demo run (Discover and Validate, ending in STOP) | Done |
+| Build, Operate agents | Not built |

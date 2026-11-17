@@ -317,7 +317,8 @@ class ContentChecklist(BaseModel):
     reason: str = Field(description="One short sentence describing the draft.")
     income_promise: bool = Field(description=(
         "True if the draft promises or implies earnings, savings, growth or success for the "
-        "buyer. Describing features, or saying results are not guaranteed, is False."))
+        "buyer. Describing features, or saying results are not guaranteed, is False. A refund "
+        "policy or money-back guarantee (the buyer can get their own money back) is False."))
     customer_proof: bool = Field(description=(
         "True if the draft contains a customer quote, review, star rating, or a claim about "
         "how many people use, bought or love this product. A placeholder in square brackets "
@@ -426,7 +427,7 @@ The draft breaks a rule only if its own text:
 - uses a countdown, a deadline, limited places or pressure to act now (FALSE_URGENCY);
 - is written as a customer, or as another company or brand (IMPERSONATION).
 
-Anything else is CLEAN, including a plain description of features, who the product is for, honest limits, questions and answers, and a request for feedback. Do not use the other categories for a draft."""
+Anything else is CLEAN, including a plain description of features, who the product is for, honest limits, questions and answers, and a request for feedback. Policy drafts are CLEAN too: terms of service, a privacy policy, and a refund policy or money-back guarantee that tells buyers how to get their own money back. Returning the price paid is not a promise of income or savings. Do not use the other categories for a draft."""
 
 
 def classifier_spec_for(surface: str) -> tuple[str, type[BaseModel], tuple[tuple[str, PolicyCategory], ...]]:

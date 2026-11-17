@@ -478,12 +478,13 @@ STEP1_STAGES = (
 )
 STEP2_STAGES = (("drafting the interview script", "Drafting the Mom Test interview script"),)
 LAUNCH_STAGES = (("drafting", "Drafting the store page and launch posts, then checking each draft with the guardrails"),)
+COMMERCIAL_STAGES = (("drafting", "Searching what similar products charge, drafting price options and the terms, privacy and refund policies, then checking each policy with the guardrails"),)
 VALIDATE_STAGES = (("drafting", "Drafting the Lean Canvas, demand-test plan, landing page and invite post, then checking the drafts with the guardrails"),)
 
 
 def working_card(stage: str, kind: str) -> str:
     stages = {"step1": STEP1_STAGES, "step2": STEP2_STAGES, "launch": LAUNCH_STAGES,
-              "validate": VALIDATE_STAGES}.get(kind, ())
+              "validate": VALIDATE_STAGES, "commercial": COMMERCIAL_STAGES}.get(kind, ())
     keys = [key for key, _ in stages]
     current = keys.index(stage) if stage in keys else 0
     items = ""
@@ -493,7 +494,8 @@ def working_card(stage: str, kind: str) -> str:
         items += f'<li class="{css}"><span class="st">{mark}</span>{esc(label)}</li>'
     title = {"step1": "Researching and challenging your idea", "step2": "Writing your interview script",
              "launch": "Drafting your launch material",
-             "validate": "Designing the business and the demand test"}.get(kind, "The agents are working")
+             "validate": "Designing the business and the demand test",
+             "commercial": "Setting the price and drafting your policies"}.get(kind, "The agents are working")
     return (
         f'<section class="card working"><p class="kicker">The agents are working: {esc(stage or "starting")}</p>'
         f"<h2>{esc(title)}</h2>"

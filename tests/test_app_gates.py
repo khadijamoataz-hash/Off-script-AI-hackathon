@@ -108,3 +108,41 @@ def test_validate_screens_fix_the_target_and_refuse_to_continue_on_weak_demand(t
     assert client.post(f"{url}/validate-gate", data={"choice": "continue"}).status_code == 409
     client.post(f"{url}/validate-gate", data={"choice": "stop"})
     assert "Phase 2 gate decision" in client.get(url).text
+
+
+def test_commercial_setup_screen_needs_every_policy_approved(tmp_path: Path, monkeypatch) -> None:
+    from tests.test_workflow_discover import PRICING, STRATEGY, _workflow
+
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, PRICING])
+    monkeypatch.setattr(app_module, "_workflow", wf)
+    client = TestClient(app_module.app, follow_redirects=False)
+
+    url = client.post("/projects", data={"idea": "An invoice reminder tool for freelance designers"}).headers["location"]
+    pid = url.rsplit("/", 1)[1]
+    _wait(pid)
+    client.post(f"{url}/decide", data={"choice": "continue"})
+    _wait(pid)
+    client.post(f"{url}/target", data={"target": "2", "what": "waitlist sign-ups"})
+    client.post(f"{url}/decide", data={"choice": "continue"})
+    client.post(f"{url}/run/validate")
+    _wait(pid)
+    client.post(f"{url}/validate-results", data={"count": "2", "kind": "sign-ups", "confirmed": "yes"})
+    client.post(f"{url}/validate-gate", data={"choice": "continue"})
+
+    assert wf.get_state(pid).get("validate_passed")
+    assert "set the price and policies" in client.get(url).text
+    assert client.post(f"{url}/run/launch").status_code == 409            # Launch waits for policies
+    client.post(f"{url}/run/commercial")
+    _wait(pid)
+    page = client.get(url).text
+    assert "Policy drafts: your approval" in page and "Recommended option: Starter" in page
+    assert "Publish the refund policy" in page and "<script" not in page
+
+    actions = wf.commercial_actions(pid)
+    client.post(f"{url}/actions/{actions[0].id}/reject", data={"reason": "too vague"})
+    for action in actions[1:]:
+        client.post(f"{url}/actions/{action.id}/approve", data={"seen_hash": action.content_hash})
+    page = client.get(url).text
+    assert "Your decision: Commercial setup" in page and "REPEAT" in page
+    assert client.post(f"{url}/commercial-gate", data={"choice": "continue"}).status_code == 409
+    assert not wf.get_state(pid).get("commercial_passed")

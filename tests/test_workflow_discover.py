@@ -290,13 +290,45 @@ LAUNCH = {
 }
 
 
+POLICY = "This draft explains how [BUSINESS NAME] handles this topic for the invoice reminder tool. " * 4
+PRICING = {
+    "comparables": [
+        {"product": "Spreadsheet trackers", "price": "free", "source_number": 1,
+         "quote": "Most of them track payments in a spreadsheet they built themselves."},
+        {"product": "InvoiceApp Pro", "price": "$15 a month", "source_number": 1,
+         "quote": "InvoiceApp Pro costs $15 a month"},
+    ],
+    "options": [
+        {"name": "Starter", "price_usd": 5, "billing": "monthly", "includes": "Reminders for up to 10 clients.",
+         "rationale": "Below paid invoicing tools; spreadsheets are free."},
+        {"name": "Studio", "price_usd": 12, "billing": "monthly", "includes": "Unlimited clients and templates.",
+         "rationale": "For designers with many retainers."},
+    ],
+    "recommended_option": "Starter",
+    "recommendation_reason": "A low price fits a single-feature tool against free spreadsheets.",
+    "willingness_to_pay": "Unknown: no interviewee has said what they would pay yet.",
+    "price_test": "Show both prices on the waitlist page and ask which one people would choose.",
+    "terms": POLICY, "privacy": POLICY, "refund": POLICY[:300],
+}
+
+
+def _commercial_passed(wf: Workflow, pid: str) -> None:
+    wf.run_commercial_setup(pid)
+    for action in wf.commercial_actions(pid):
+        wf.approve_and_export(action.id, seen_hash=action.content_hash)
+    wf.decide_commercial_gate(pid, "continue")
+
+
 def test_launch_drafts_need_approval_of_the_exact_text(tmp_path: Path) -> None:
-    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, LAUNCH])
+    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, PRICING, LAUNCH])
     pid = _discover_approved(wf, target=5)
     wf.run_validate_step1(pid)
     wf.record_validate_results(pid, 6, "waitlist sign-ups", confirmed_real=True)
     assert wf.validate_check(pid).recommendation.value == "advance"
     wf.decide_validate(pid, "continue")
+    with pytest.raises(WorkflowError, match="Commercial setup"):
+        wf.run_launch_drafts(pid)                       # price and policies come first
+    _commercial_passed(wf, pid)
 
     wf.run_launch_drafts(pid)
     out = tmp_path / "outputs"
@@ -304,7 +336,7 @@ def test_launch_drafts_need_approval_of_the_exact_text(tmp_path: Path) -> None:
     assert len(actions) == 3 and all(a.status.value == "pending" for a in actions)
     assert "[Real customer quote - collect after launch]" in (out / "phase5_step1_store_page.md").read_text()
     assert "No payment took place" in (out / "payment_test_log.md").read_text()
-    assert not list(out.glob("*approved*"))             # nothing exported before approval
+    assert not list(out.glob("phase5*approved*"))       # nothing exported before approval
 
     with pytest.raises(WorkflowError, match="not met"):
         wf.decide_launch_gate(pid, "continue")          # drafts still unreviewed
@@ -318,7 +350,7 @@ def test_launch_drafts_need_approval_of_the_exact_text(tmp_path: Path) -> None:
     wf.decide_launch_gate(pid, "continue")
     gate = (out / "phase5_gate_decision.md").read_text()
     assert "1 approved, 2 rejected, 0 not yet reviewed" in gate and "CONTINUE" in gate
-    assert len(list(out.glob("*approved*"))) == 1
+    assert len(list(out.glob("*approved*"))) == 4         # three policies and one launch draft
     assert log.verify().valid
 
 
@@ -349,12 +381,13 @@ def test_unsafe_draft_is_blocked_before_the_approval_queue(tmp_path: Path) -> No
             category=PolicyCategory.FAKE_SOCIAL_PROOF if bad else PolicyCategory.CLEAN,
         )
 
-    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, LAUNCH])
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, PRICING, LAUNCH])
     wf.engine.classifier = classifier
     pid = _discover_approved(wf, target=1)
     wf.run_validate_step1(pid)
     wf.record_validate_results(pid, 1, "waitlist sign-ups", confirmed_real=True)
     wf.decide_validate(pid, "continue")
+    _commercial_passed(wf, pid)
     state = wf.run_launch_drafts(pid)
     assert len(state["launch_blocked"]) == 1 and len(wf.launch_actions(pid)) == 2
 
@@ -398,3 +431,42 @@ def test_repeating_step_1_does_not_screen_the_same_brief_again(tmp_path: Path) -
     state = wf.run_discover_step1(pid)
     assert state["awaiting"] == "step1_gate" and not state.get("rejected")
     assert sum(e.action == "screen_brief" for e in log.read_all()) == 1
+
+
+def test_commercial_setup_sources_prices_and_needs_every_policy_approved(tmp_path: Path) -> None:
+    wf, log = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), SCRIPT, STRATEGY, PRICING, PRICING])
+    pid = _discover_approved(wf, target=2)
+    with pytest.raises(WorkflowError, match="Validate"):
+        wf.run_commercial_setup(pid)                    # not before demand is shown
+    wf.run_validate_step1(pid)
+    wf.record_validate_results(pid, 2, "waitlist sign-ups", confirmed_real=True)
+    wf.decide_validate(pid, "continue")
+
+    wf.run_commercial_setup(pid)
+    out = tmp_path / "outputs"
+    pricing = (out / "phase4_step1_pricing.md").read_text()
+    assert "**Recommended option: Starter.**" in pricing
+    # The spreadsheet quote is on the fetched page; the invented competitor price is not.
+    assert pricing.count("Sourced") >= 1 and "ASSUMPTION" in pricing
+    assert "takes no payments" in pricing
+    actions = wf.commercial_actions(pid)
+    assert [a.action_type.value for a in actions] == ["sign"] * 3
+    assert all("not legal advice" in a.body for a in actions)
+    assert not list(out.glob("*approved*"))             # nothing exported before approval
+
+    wf.approve_and_export(actions[0].id, seen_hash=actions[0].content_hash)
+    wf.reject(actions[1].id, "Too vague")
+    wf.reject(actions[2].id, "")
+    with pytest.raises(WorkflowError, match="not met"):
+        wf.decide_commercial_gate(pid, "continue")      # a rejected policy blocks selling
+    assert "REPEAT" in (out / "phase4_gate_decision.md").read_text()
+    with pytest.raises(WorkflowError, match="Commercial setup"):
+        wf.run_launch_drafts(pid)
+
+    wf.decide_commercial_gate(pid, "repeat")            # new drafts, all approved this time
+    _commercial_passed(wf, pid)
+    assert wf.get_state(pid)["commercial_passed"] is True
+    entries = [e for e in log.read_all() if e.action == "commercial_gate"]
+    assert [e.outcome for e in entries] == ["repeat", "continue"]
+    assert all(e.approved_by == "founder" for e in entries)
+    assert log.verify().valid
