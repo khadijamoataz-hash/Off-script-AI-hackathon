@@ -127,7 +127,7 @@ class Workflow:
         self.adapter = adapter or LLMAdapter()
         self.out_dir = out_dir or outputs_dir()
         # One guardrail engine for everything. The model classifier is always on and fails
-        # closed; it reads founder requests and every draft entering the approval queue.
+        # closed; it reads requests, internal Discover outputs and approval-queue drafts.
         self.engine = PolicyEngine(
             decision_log=self.log,
             classifier=classifier or build_llm_safety_classifier(self.adapter),
@@ -187,6 +187,23 @@ class Workflow:
             else:
                 kept.append(line)
         return "\n".join(kept)
+
+    def _check_internal_output(self, project_id: str, output: Any, agent: str) -> None:
+        """Refuse the entire structured output before it can become evidence or an artifact."""
+        decision = self.engine.evaluate_text(
+            output.model_dump_json(),
+            PolicyContext(
+                project_id=project_id, phase=PhaseName.DISCOVER.value,
+                surface="internal_output", metadata={"agent": agent},
+            ),
+        )
+        if not decision.allowed:
+            message = f"Internal {agent} output refused: {decision.founder_prompt or decision.reason}"
+            self._set_state(
+                project_id, stage="internal output refused", awaiting=None,
+                refusal=message, error=message,
+            )
+            raise WorkflowError(message)
 
     def _tool_allowed(self, project_id: str, tool: str, args: dict[str, Any]) -> bool:
         return self.engine.evaluate_tool_call(
@@ -322,6 +339,7 @@ class Workflow:
         self._set_state(project_id, stage="finding opportunities")
         research = research_opportunities(self.adapter, brief, pages, excerpts)
         self._add_usage(project_id, research)
+        self._check_internal_output(project_id, research.output, "researcher")
         claims = self._record_claims(project_id, research.output, pages)
         facts = [c for c in claims if c.claim_type == ClaimType.FACT]
         self.log.append(
@@ -339,6 +357,7 @@ class Workflow:
         option = research.output.recommended_option()
         critic = critique(self.adapter, brief, option, claims)
         self._add_usage(project_id, critic)
+        self._check_internal_output(project_id, critic.output, "critic")
         self.log.append(
             action="critique_idea", agent="critic", actor="agent_proposal", phase=phase,
             decision=(
@@ -352,10 +371,10 @@ class Workflow:
         recommendation, reason = discover_recommendation(critic.output, len(facts))
         path = self._write(project_id, 
             "phase1_step1_opportunities.md",
-            self._scrub(project_id, phase, render_opportunities(
+            render_opportunities(
                 project, research.output, critic.output, claims, search_note,
                 recommendation, reason,
-            )),
+            ),
         )
         self.orch.save_phase_artifact(
             project_id, PhaseName.DISCOVER,
@@ -506,10 +525,13 @@ class Workflow:
         self._set_state(project_id, stage="drafting the interview script", awaiting=None)
         option = Opportunity(**artifact["recommended_option"])
         research = ResearchOutput(**artifact["research"])
+        self._check_internal_output(project_id, research, "researcher")
+        self._check_internal_output(project_id, CriticOutput(**artifact["critic"]), "critic")
         script = draft_interview_script(
             self.adapter, self._brief(project), option, research.market_definition
         )
         self._add_usage(project_id, script)
+        self._check_internal_output(project_id, script.output, "interview")
         self.log.append(
             action="draft_interview_script", agent="researcher", actor="agent_proposal",
             phase=PhaseName.DISCOVER.value,
@@ -521,8 +543,7 @@ class Workflow:
         files = [
             self._write(project_id, 
                 "phase1_step2_interview_script.md",
-                self._scrub(project_id, PhaseName.DISCOVER.value,
-                            render_interview_script(project, option, script.output)),
+                render_interview_script(project, option, script.output),
             ),
             self._write(project_id, 
                 "phase1_gate_decision.md",

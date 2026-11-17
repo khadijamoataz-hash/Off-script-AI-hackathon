@@ -18,7 +18,7 @@ from evals.redteam import REDTEAM_CASES, format_redteam_markdown_table, run_redt
 
 
 RULE_BLOCK_CASES = [c for c in REDTEAM_CASES if c.expect == "block" and not c.needs_model]
-ALLOW_CASES = [c for c in REDTEAM_CASES if c.expect == "allow"]
+ALLOW_CASES = [c for c in REDTEAM_CASES if c.expect == "allow" and not c.needs_model]
 
 
 @pytest.mark.parametrize("case", ALLOW_CASES, ids=[c.case_id for c in ALLOW_CASES])

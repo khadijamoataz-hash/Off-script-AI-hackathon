@@ -204,3 +204,32 @@ def test_quote_matching_ignores_footnotes_and_keeps_only_the_supported_sentence(
 
     short = ledger.add_claim("Writing.", project_id="p", source_url=url, quote="freelancers do writing")
     assert short.claim_type == ClaimType.ASSUMPTION
+
+
+@pytest.mark.parametrize("citation", ["[14]", "[1, 3]", "[2-4]"])
+def test_quote_matching_ignores_numeric_citations(citation: str, tmp_path: Path) -> None:
+    ledger = EvidenceLedger(tmp_path / "ledger.sqlite3")
+    url = "https://example.org/report"
+    quote = "Participants reported spending hours preparing invoices."
+    ledger.record_fetch(project_id="p", url=url, text=f"Participants{citation} reported spending hours preparing invoices.")
+
+    claim = ledger.add_claim(quote, project_id="p", source_url=url, quote=quote)
+
+    assert claim.claim_type == ClaimType.FACT
+
+
+def test_quote_matching_never_erases_bracketed_negation(tmp_path: Path) -> None:
+    ledger = EvidenceLedger(tmp_path / "ledger.sqlite3")
+    url = "https://example.org/report"
+    source = "Participants did [not] report spending hours preparing invoices."
+    ledger.record_fetch(project_id="p", url=url, text=source)
+
+    contradicted = ledger.add_claim(
+        "Participants did report spending hours preparing invoices.",
+        project_id="p", source_url=url,
+        quote="Participants did report spending hours preparing invoices.",
+    )
+    faithful = ledger.add_claim(source, project_id="p", source_url=url, quote=source)
+
+    assert contradicted.claim_type == ClaimType.ASSUMPTION
+    assert faithful.claim_type == ClaimType.FACT

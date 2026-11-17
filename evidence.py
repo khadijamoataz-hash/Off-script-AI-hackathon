@@ -37,8 +37,8 @@ def _utc_now_iso() -> str:
 
 def normalize_text(text: str) -> str:
     """Reduce text to lowercase words so a quote can be matched despite spacing, punctuation,
-    quote style or footnote markers such as [12]."""
-    text = re.sub(r"\[[^\]]{1,6}\]", " ", text.lower())
+    quote style or numeric footnote markers such as [12]. Preserve bracketed words."""
+    text = re.sub(r"\[\s*\d+(?:\s*[-,]\s*\d+)*\s*\]", " ", text.lower())
     text = re.sub(r"[^\w%$]+", " ", text, flags=re.UNICODE)
     return " ".join(text.split())
 

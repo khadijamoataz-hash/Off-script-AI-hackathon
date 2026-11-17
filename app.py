@@ -52,7 +52,7 @@ STATUS_ROWS: list[tuple[str, str, str]] = [
     ("Approval queue with signed single-use tokens", "Working", "approval.py"),
     ("Six-phase state machine and gates", "Working", "orchestrator.py, gates.py"),
     ("Guardrails: keyword backstop, secrets detector, tool allowlist", "Working", "guardrails.py"),
-    ("Guardrails: model classifier on founder requests and outbound drafts, fails closed", "Working", "guardrails.py, llm.py"),
+    ("Guardrails: model classifier on founder requests, internal Discover outputs and outbound drafts, fails closed", "Working", "guardrails.py, llm.py"),
     ("Local model adapter (Ollama)", "Working", "llm.py"),
     ("Founder brief intake, with excluded product types refused", "Working", "agents/intake.py, app.py"),
     ("Web search (self-hosted SearXNG) and page fetch with quote check", "Working", "tools.py"),

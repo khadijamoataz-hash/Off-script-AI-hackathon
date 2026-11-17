@@ -155,9 +155,9 @@ reconciliation: orders == payments - fees == payouts, mismatches listed for the 
 ## Data flow
 
 1. The founder submits a brief. A brief containing a password, key or card number is refused and not stored. Otherwise the orchestrator creates a project and logs it.
-2. Before any agent runs, guardrails read the brief as a founder request: keyword backstop, then the model classifier (two differently framed checks at temperature 0 with a fixed seed, so the same text gets the same answer; any failure or doubt blocks). A refused request is logged and shown to the founder with the reason.
-3. An agent runs a step: it calls the local model and allowlisted tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source that contains its quote is stored as `ASSUMPTION`. The agent returns a typed result.
-4. The step output is written to `outputs/` and the action is appended to `decision_log.json` with `agent`, `action`, `sources`, `model`, `cost`, `approved_by` and a hash chain (`prev_hash`, `entry_hash`).
+2. Before any agent runs, guardrails read the brief as a founder request: keyword backstop, then the model classifier (two differently framed checks at temperature 0 with a fixed seed to reduce variation, not guarantee identical answers; any failure or doubt blocks). A refused request is logged and shown to the founder with the reason.
+3. An agent runs a step: it calls the local model and allowlisted tools. Fetched pages become evidence records (URL, quote, date). A claim without a fetched source that contains its quote is stored as `ASSUMPTION`. Quote normalization ignores numeric citations but preserves bracketed words, including negations. Quote matching verifies passage provenance, not whether the passage entails the agent's interpretation; that remains a founder review task. The agent returns a typed result.
+4. Discover research, critic reviews and interview scripts pass two dedicated internal-output model checks before use or export. These distinguish analysis and `do_not_ask` counterexamples from outcome promises or fabricated proof; uncertainty, model failure or an output over 20,000 characters blocks the step without silently truncating it. Only accepted output is written to `outputs/`; actions and blocks are recorded in `decision_log.json` with `agent`, `action`, `sources`, `model`, `cost`, `approved_by` and a hash chain (`prev_hash`, `entry_hash`).
 5. The gate is evaluated and a recommendation is shown. The founder decides; the decision is logged.
 6. Outbound items (post, email, listing, deploy, support reply, sign) pass the guardrails as agent output (keyword backstop and model classifier) and then enter the approval queue; a blocked draft is logged and never queued. Approval creates a signed, single-use token bound to the content hash; any edit cancels it. The executor verifies the token and writes copy-ready text to `outputs/`. `spend` has no executor.
 7. `scripts/verify_decision_log.py` checks the required keys and the hash chain.
@@ -184,7 +184,7 @@ The project's **Evidence & activity** page reads the project's claims, demand ta
 | Decision log (`decision_log.py`) | Working |
 | Approval queue and tokens (`approval.py`) | Working |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (`guardrails.py`) | Working; keyword rules are English only |
-| Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on the founder brief and on drafts entering the approval queue; a small local model, so not perfect (see `evals/results.md`) |
+| Guardrails: model classifier, two checks, fails closed (`guardrails.py`, `llm.py`) | Working on the founder brief, internal Discover research/critic/interview outputs and drafts entering the approval queue; not a factual-accuracy or entailment verifier. Historical founder/outbound measurements are in `evals/results.md`; the new internal surface has separate regression tests and model-only eval cases |
 | Model adapter (`llm.py`) | Working |
 | Phase 3 Build, Phase 6 Operate agents | STUBBED |
 | Sandboxed test runner, CLI | STUBBED |
@@ -198,6 +198,6 @@ Done in the prototype: brief intake with immediate rejection of non-digital prod
 Next:
 
 1. Speed: shorter agent outputs and parallel checks, so a full run fits in about three minutes on a laptop.
-2. Guardrails: a stronger classifier model, the classifier on internal documents as well, wider evals.
+2. Guardrails: a stronger classifier model, dedicated checks on the remaining internal phases, wider repeated model evals, and claim-to-quote entailment checks.
 3. Build and Operate agents.
 4. After the hackathon: community playbooks per product type, more search sources, and a hosted option for founders who cannot run a model.

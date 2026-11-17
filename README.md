@@ -9,7 +9,7 @@ What you can check in this repository:
 - **Evidence, not opinion:** a claim counts as sourced only if its quote is found on a page fetched in that run; otherwise it is labelled `ASSUMPTION`. In the demo run, 7 of 7 claims were sourced: [outputs/phase1_step1_opportunities.md](outputs/phase1_step1_opportunities.md).
 - **Founder in control:** nothing is published, sent or signed until the founder approves the exact text; each approval is a signed, single-use token bound to that text ([approval.py](approval.py)).
 - **Tamper-evident record:** every agent action is in a hash-chained [decision_log.json](decision_log.json); `python scripts/verify_decision_log.py` checks it.
-- **Guardrails measured:** 51 of 51 eval cases passed in each of 3 repeated runs, including Arabic: [evals/results.md](evals/results.md).
+- **Guardrails measured:** the previous 51-case founder-request and outbound-draft suite passed in each of 3 repeated runs, including Arabic: [evals/results.md](evals/results.md). New internal-output cases are separate from that measurement.
 - **Free and local:** an open-weight model through Ollama, no API key, about $0.00 per run.
 
 ## Quickstart
@@ -55,18 +55,20 @@ python -m evals.run --model --repeat 3    # the same, 3 times, to measure how st
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
 | Guardrails: secrets detector, keyword backstop, tool allowlist (no model needed) | **Working** | `guardrails.py` |
-| Guardrails: model classifier on the founder brief and on every draft entering the approval queue; fails closed | **Working**: 51 of 51 eval cases in each of 3 repeated runs with `qwen3.5:9b` (34 attacks blocked, 17 normal requests, briefs and policy drafts allowed, including Arabic) | `guardrails.py`, `llm.py`, `evals/results.md` |
+| Guardrails: model classifier on the founder brief, internal Discover outputs and every draft entering the approval queue; fails closed | **Working**: the previous founder-request and outbound-draft suite passed 51 of 51 cases in each of 3 repeated runs with `qwen3.5:9b`; internal-output checks have separate regression tests and model-only eval cases | `guardrails.py`, `llm.py`, `evals/results.md` |
 | Local model adapter (Ollama) | **Working** | `llm.py` |
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
 
-Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Internal documents (the opportunities report, the interview script) get the keyword check only. Because Phase 3 is stubbed, a project that passes Validate stays recorded at Build while Commercial setup and Launch drafting run. The policy drafts are not legal advice and say so. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
+Known limits: the keyword backstop is English only; rewordings, Arabic and Arabic in Latin letters depend on the model classifier, which is a small local model and can miss a cleverly worded request (measured results are in `evals/results.md`). What it cannot do is cause a payment, a post or an account: no code for those exists. Discover research, critic reviews and interview scripts now pass dedicated internal-analysis checks for outcome promises and fabricated proof before use or export; this is not a general factual-accuracy check. Both model checks receive the whole structured output; payloads over 20,000 characters are blocked rather than truncated. Other internal phases do not yet have these dedicated checks. Because Phase 3 is stubbed, a project that passes Validate stays recorded at Build while Commercial setup and Launch drafting run. The policy drafts are not legal advice and say so. Only demand the founder records (real sign-ups, interviews or pre-orders) counts toward the Validate target; fetched sources do not.
 
 Discover's question checks cover common English patterns, not every leading question or language; the founder still reviews the script. Invalid recommendations and questions use the model's existing repair retries. If repair fails, the step reports an error instead of exporting the invalid result or opening its gate.
 
+Evidence matching ignores numeric citation markers such as `[12]` but preserves bracketed words such as negations. A matched quote verifies that the passage was fetched; it does not establish that the agent's interpretation follows from it. The founder should review the supporting quote before relying on a claim.
+
 ## Architecture
 
-A state machine moves a project through six phases: Discover, Validate, Build, Commercial setup, Launch, Operate and learn. Every step ends with a gate: founder approval, an evidence target set in advance, or passing tests. Agents can only propose actions; anything that would be published, sent, spent or signed waits in an approval queue until the founder approves the exact content. Every claim is stored with a fetched source or labelled `ASSUMPTION`, and every agent action is written to a hash-chained `decision_log.json`. Agent outputs are typed, so content such as testimonials, prices or countdowns has no field to be written into. A secrets detector, keyword rules and a model classifier that fails closed check the founder's brief before any agent runs and every draft before it enters the approval queue. Full design: [ARCHITECTURE.md](ARCHITECTURE.md).
+A state machine moves a project through six phases: Discover, Validate, Build, Commercial setup, Launch, Operate and learn. Every step ends with a gate: founder approval, an evidence target set in advance, or passing tests. Agents can only propose actions; anything that would be published, sent, spent or signed waits in an approval queue until the founder approves the exact content. Every claim is stored with a fetched source or labelled `ASSUMPTION`, and every agent action is written to a hash-chained `decision_log.json`. Typed schemas validate output structure; a secrets detector, keyword rules and a fail-closed model classifier check the founder's brief, internal Discover analysis and outbound drafts, with dedicated checks appropriate to each surface. Full design: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Models and free resources
 
@@ -76,6 +78,7 @@ A state machine moves a project through six phases: Discover, Validate, Build, C
 - If the model is not available, model calls fail with an error. There is no mock fallback outside the tests.
 - Web search uses a SearXNG container started by the same command: no key, no account.
 - Speed: inside Docker on a Mac the model runs on CPU (several minutes per step). To use a host Ollama with GPU access, set `FOUNDRY_OLLAMA_URL=http://host.docker.internal:11434` in `.env`.
+- A bounded local check of one Discover step did not complete: research exceeded the benchmark's 55-second per-request limit, about 95 seconds after starting. This was not the production timeout; a complete run within three minutes remains unverified.
 
 ## Cost per run
 
