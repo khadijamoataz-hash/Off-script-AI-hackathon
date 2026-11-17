@@ -4,6 +4,14 @@ An open-source team of AI agents that takes a founder's brief toward a validated
 
 In the committed demo run, the critic recommended REPEAT three times, the founder fixed a demand target of 55 sign-ups before the test, real demand came in at 0, and the system recommended **STOP**. Step-by-step walkthrough with links to every output: [docs/demo_run.md](docs/demo_run.md).
 
+What you can check in this repository:
+
+- **Evidence, not opinion:** a claim counts as sourced only if its quote is found on a page fetched in that run; otherwise it is labelled `ASSUMPTION`. In the demo run, 7 of 7 claims were sourced: [outputs/phase1_step1_opportunities.md](outputs/phase1_step1_opportunities.md).
+- **Founder in control:** nothing is published, sent or signed until the founder approves the exact text; each approval is a signed, single-use token bound to that text ([approval.py](approval.py)).
+- **Tamper-evident record:** every agent action is in a hash-chained [decision_log.json](decision_log.json); `python scripts/verify_decision_log.py` checks it.
+- **Guardrails measured:** 51 of 51 eval cases passed in each of 3 repeated runs, including Arabic: [evals/results.md](evals/results.md).
+- **Free and local:** an open-weight model through Ollama, no API key, about $0.00 per run.
+
 ## Quickstart
 
 ```bash
