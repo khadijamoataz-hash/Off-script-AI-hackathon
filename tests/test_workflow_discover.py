@@ -193,6 +193,108 @@ def test_critic_schema_rejects_agreement_without_risks() -> None:
         CriticOutput(**weak)
 
 
+def test_research_repairs_unknown_recommendation_before_selecting_an_idea(
+    tmp_path: Path,
+) -> None:
+    invalid = RESEARCH | {"recommended": "An option that was never proposed"}
+    repaired = RESEARCH | {"recommended": "Invoice templates"}
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, invalid, repaired, _critic("go")])
+    pid = wf.start_project(BRIEF).id
+
+    wf.run_discover_step1(pid)
+
+    artifact = wf.orch.get_project(pid).phase_artifacts["discover"]
+    assert artifact["recommended_option"]["title"] == "Invoice templates"
+    assert wf.get_state(pid)["usage"]["model_calls"] == 4
+
+
+def test_research_rejects_ambiguous_option_titles() -> None:
+    from pydantic import ValidationError
+    from agents.researcher import ResearchOutput
+
+    duplicate = _option("  INVOICE   TEMPLATES  ")
+    with pytest.raises(ValidationError, match="distinct"):
+        ResearchOutput(**(RESEARCH | {"alternatives": [_option("Invoice templates"), duplicate]}))
+
+
+def test_research_matches_recommendation_despite_case_and_whitespace() -> None:
+    from agents.researcher import ResearchOutput
+
+    research = ResearchOutput(**(RESEARCH | {"recommended": "  INVOICE \n TEMPLATES  "}))
+    assert research.recommended_option().title == "Invoice templates"
+
+
+@pytest.mark.parametrize("question", [
+    "If you had unlimited money, what would be the first thing you changed?",
+    "Imagine the perfect invoice tool. What does it do?",
+    "Suppose you could automate this. How much time would that save?",
+    "What WOULD\nYOU change about invoicing?",
+    "Will you try a reminder tool next month?",
+    "Are you planning to change tools next year?",
+    "Do you like our product?",
+])
+def test_interview_script_rejects_hypotheticals_and_product_pitches(question: str) -> None:
+    from pydantic import ValidationError
+    from agents.researcher import InterviewScript
+
+    with pytest.raises(ValidationError, match="Mom Test"):
+        InterviewScript(**(SCRIPT | {"questions": [question, *SCRIPT["questions"][1:]]}))
+
+
+def test_interview_script_repairs_hypothetical_before_writing_output(tmp_path: Path) -> None:
+    hypothetical = "If you had unlimited money, what would be the first thing you changed?"
+    invalid = SCRIPT | {"questions": [hypothetical, *SCRIPT["questions"][1:]]}
+    wf, _ = _workflow(tmp_path, [SCREEN_OK, RESEARCH, _critic("go"), invalid, SCRIPT])
+    pid = wf.start_project(BRIEF).id
+    wf.run_discover_step1(pid)
+    wf.decide_step(pid, "continue")
+
+    state = wf.run_discover_step2(pid)
+
+    text = (tmp_path / "outputs" / "phase1_step2_interview_script.md").read_text()
+    assert hypothetical not in text
+    assert SCRIPT["questions"][0] in text
+    assert state["awaiting"] == "phase_gate"
+    assert state["usage"]["model_calls"] == 5
+
+
+def test_interview_script_allows_polite_questions_about_real_past_events() -> None:
+    from agents.researcher import InterviewScript
+
+    question = "Could you walk me through the last time you chased an invoice?"
+    script = InterviewScript(**(SCRIPT | {"questions": [question, *SCRIPT["questions"][1:]]}))
+    assert script.questions[0] == question
+    assert script.do_not_ask == SCRIPT["do_not_ask"]
+
+
+@pytest.mark.parametrize("stage", ["research", "interview"])
+def test_unrepaired_discover_output_never_reaches_a_gate(tmp_path: Path, stage: str) -> None:
+    from llm import LLMError
+
+    if stage == "research":
+        invalid = RESEARCH | {"recommended": "An option that was never proposed"}
+        replies = [SCREEN_OK, invalid, invalid, invalid]
+        filename = "phase1_step1_opportunities.md"
+    else:
+        invalid = SCRIPT | {"questions": ["Imagine your ideal tool.", *SCRIPT["questions"][1:]]}
+        replies = [SCREEN_OK, RESEARCH, _critic("go"), invalid, invalid, invalid]
+        filename = "phase1_step2_interview_script.md"
+    wf, _ = _workflow(tmp_path, replies)
+    pid = wf.start_project(BRIEF).id
+    if stage == "interview":
+        wf.run_discover_step1(pid)
+        wf.decide_step(pid, "continue")
+
+    with pytest.raises(LLMError, match="Structured output validation failed after 3 attempt"):
+        if stage == "research":
+            wf.run_discover_step1(pid)
+        else:
+            wf.run_discover_step2(pid)
+
+    assert not (tmp_path / "outputs" / filename).exists()
+    assert wf.get_state(pid).get("awaiting") is None
+
+
 def _box(text: str, source: int | None = None, quote: str | None = None) -> dict:
     return {"text": text, "source_number": source, "quote": quote}
 

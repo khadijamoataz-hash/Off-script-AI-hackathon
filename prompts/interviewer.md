@@ -5,6 +5,8 @@ Rules of The Mom Test:
 - Never pitch, describe the product, or ask whether they would use, buy or pay for it.
 - Ask for specifics: the last time it happened, what they did, what it cost, what they tried.
 - No leading questions and no questions about the future ("would you", "will you").
+- No imagined scenarios ("imagine", "suppose", "if you had unlimited money"), future plans
+  or questions asking whether they like the proposed product. Ask for a specific past event.
 
 Produce:
 - `who_to_interview`: the exact kind of person and where to find 10 of them.

@@ -336,7 +336,7 @@ class Workflow:
         )
 
         self._set_state(project_id, stage="critic review")
-        option = self._recommended_option(research.output)
+        option = research.output.recommended_option()
         critic = critique(self.adapter, brief, option, claims)
         self._add_usage(project_id, critic)
         self.log.append(
@@ -493,14 +493,6 @@ class Workflow:
                 )
             )
         return claims
-
-    @staticmethod
-    def _recommended_option(research: ResearchOutput) -> Opportunity:
-        wanted = research.recommended.strip().lower()
-        for option in research.options():
-            if option.title.strip().lower() == wanted:
-                return option
-        return max(research.options(), key=lambda option: option.total)
 
     # ------------------------------------------------------------------ step 2
 
