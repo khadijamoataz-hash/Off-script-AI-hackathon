@@ -142,20 +142,24 @@ def test_discover_runs_to_gates_and_only_verified_quotes_are_sourced(tmp_path: P
     assert log.verify().valid
 
 
-def test_excluded_product_gets_stop_recommendation_and_cannot_continue(tmp_path: Path) -> None:
-    screen = {"excluded_category": "financial_investment_crypto",
-              "reason": "It sells trading signals.", "search_queries": []}
-    wf, _ = _workflow(tmp_path, [screen])
-    pid = wf.start_project(BRIEF.model_copy(update={"idea": "A crypto trading signals subscription"})).id
+def test_physical_product_is_rejected_immediately_with_no_research(tmp_path: Path) -> None:
+    screen = {"excluded_category": "physical_goods",
+              "reason": "The customer receives handmade candles.", "search_queries": []}
+    wf, log = _workflow(tmp_path, [screen])          # only the screening call may happen
+    pid = wf.start_project(BRIEF.model_copy(update={"idea": "Sell handmade scented candles online"})).id
 
     state = wf.run_discover_step1(pid)
-    assert state["recommendation"] == "stop"
-    assert "STOP" in (tmp_path / "outputs" / "phase1_gate_decision.md").read_text()
-    assert not (tmp_path / "outputs" / "phase1_step1_opportunities.md").exists()
-    with pytest.raises(WorkflowError, match="cannot continue"):
-        wf.decide_step(pid, "continue")
-    wf.decide_step(pid, "stop")
+    assert state["rejected"] is True and state["awaiting"] is None
     assert wf.orch.get_project(pid).status == ProjectStatus.STOPPED
+    gate = (tmp_path / "outputs" / "phase1_gate_decision.md").read_text()
+    assert "STOP" in gate and "REJECTED by Foundry" in gate
+    assert not (tmp_path / "outputs" / "phase1_step1_opportunities.md").exists()
+    actions = [e.action for e in log.read_all()]
+    assert "web_search" not in actions and "find_opportunities" not in actions
+    with pytest.raises(WorkflowError):
+        wf.decide_step(pid, "continue")
+    with pytest.raises(WorkflowError):
+        wf.run_discover_step1(pid)
 
 
 def test_critic_stop_and_missing_sources_shape_the_recommendation(tmp_path: Path) -> None:

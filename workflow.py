@@ -230,12 +230,16 @@ class Workflow:
             project_id, stage="screening the brief", awaiting=None, error=None, refusal=None
         )
 
-        request = self.engine.screen_request(brief.as_prompt(), project_id=project_id, phase=phase)
-        if not request.allowed:
+        def refused(decision: PolicyDecision) -> dict[str, Any]:
             return self._set_state(
                 project_id, stage="request refused", awaiting="revise_brief",
-                refusal=f"{request.founder_prompt} (Rule: {request.category.value}.)",
+                refusal=f"{decision.founder_prompt} (Rule: {decision.category.value}.)",
             )
+
+        request_context = PolicyContext(project_id=project_id, phase=phase, surface="founder_request")
+        quick = self.engine.evaluate_text(brief.as_prompt(), request_context, use_classifier=False)
+        if not quick.allowed:
+            return refused(quick)
 
         screen = screen_brief(self.adapter, brief)
         self._add_usage(project_id, screen)
@@ -248,6 +252,11 @@ class Workflow:
         )
         if screen.output.is_excluded:
             return self._excluded(project, screen.output)
+
+        self._set_state(project_id, stage="safety check")
+        request = self.engine.evaluate_text(brief.as_prompt(), request_context)
+        if not request.allowed:
+            return refused(request)
 
         self._set_state(project_id, stage="searching and reading sources")
         pages, search_note = self._gather_sources(project_id, brief, screen.output.search_queries)
@@ -314,25 +323,31 @@ class Workflow:
         )
 
     def _excluded(self, project: ProjectRecord, screen: BriefScreen) -> dict[str, Any]:
+        """An excluded product type is rejected at once: no research, no agents, no gate."""
         label = EXCLUDED_LABELS[screen.excluded_category]
         reason = (
-            f"This brief describes a product type Foundry does not work on ({label}). "
-            f"{screen.reason}"
+            f"Foundry only works on digital products. This brief describes {label}, which it "
+            f"does not work on. {screen.reason}"
         )
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET status = ? WHERE id = ?",
+                (ProjectStatus.STOPPED.value, project.id),
+            )
         self.log.append(
             action="discover_gate", agent="gate", actor="gate_check",
             phase=PhaseName.DISCOVER.value,
-            decision=f"Excluded product type. System recommendation: stop. {reason}",
-            outcome="recommend_stop", sources=[], model=None, cost=0, project_id=project.id,
-            metadata={"excluded_category": screen.excluded_category},
+            decision=f"Brief rejected: excluded product type ({label}). {screen.reason}",
+            outcome="stop", sources=[], model=None, cost=0, project_id=project.id,
+            metadata={"excluded_category": screen.excluded_category, "rejected_by": "system"},
         )
         path = self._write(
             "phase1_gate_decision.md",
             render_gate_decision(project, "stop", reason, founder_decision=None, excluded=True),
         )
         return self._set_state(
-            project.id, stage="excluded product type", awaiting="excluded_gate",
-            recommendation="stop", recommendation_reason=reason, files=[path],
+            project.id, stage="rejected: product type not supported", awaiting=None,
+            rejected=True, recommendation="stop", recommendation_reason=reason, files=[path],
         )
 
     def _gather_sources(
@@ -791,8 +806,12 @@ def render_gate_decision(
         "# Phase 1 gate decision: Discover",
         f"Project `{project.id}`: {project.idea_summary}",
         f"**System recommendation: {recommendation.upper()}.** {reason}",
-        "**Founder decision:** "
-        + (founder_decision.upper() if founder_decision else "pending (waiting for the founder)"),
+        (
+            "**Outcome:** REJECTED by Foundry. No research was run and no founder decision is needed."
+            if excluded
+            else "**Founder decision:** "
+            + (founder_decision.upper() if founder_decision else "pending (waiting for the founder)")
+        ),
         "## What this gate checks",
         "The founder reviews the sharpened idea, the critic's risks and kill criteria, and the "
         "interview script, then chooses: continue, repeat, go back, or stop. "
@@ -801,7 +820,8 @@ def render_gate_decision(
     if excluded:
         parts.append(
             "Excluded product types (physical goods; financial, investment or crypto products; "
-            "health or legal advice products) cannot continue. The only choice offered is stop."
+            "health or legal advice products) are rejected immediately. The founder can submit "
+            "a new brief for a digital product."
         )
     if usage and usage.get("model_calls"):
         total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)

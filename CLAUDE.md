@@ -151,7 +151,7 @@ Everything above is the organizers' file, unchanged. This part records the team'
 
 ## 2. Input: the founder brief
 
-The system starts from a brief, not a one-line idea: starting idea, skills, budget, available time, target market, values. Discover rejects excluded products (physical goods; financial, investment or crypto; health or legal advice) with a logged STOP recommendation.
+The system starts from a brief, not a one-line idea: starting idea, skills, budget, available time, target market, values. Only digital products are handled. Discover rejects excluded products (physical goods; financial, investment or crypto; health or legal advice) immediately, before any research, with a logged STOP.
 
 ## 3. Phases, core steps and outputs
 

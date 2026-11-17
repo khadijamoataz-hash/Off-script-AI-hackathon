@@ -519,6 +519,11 @@ def build_llm_safety_classifier(adapter: LLMAdapter) -> ClassifierCallable:
         if not text.strip():
             return ClassifierVerdict(safe=True, confident=True, category=PolicyCategory.CLEAN)
         prompt, checklist, flags = classifier_spec_for(ctx.surface)
+        if ctx.surface == "agent_output":
+            # Fixed placeholder slots such as "[Real customer quote - collect after launch]"
+            # are inserted by code, not written by the model; they are not content to judge.
+            text = re.sub(r"(?m)^##[^\n]*\n+\[[^\]\n]{3,80}\]\s*$", "", text)
+            text = re.sub(r"\[[^\]\n]{3,80}\]", "", text)
         resp = adapter.generate_structured(
             system_prompt=prompt,
             user_prompt=(

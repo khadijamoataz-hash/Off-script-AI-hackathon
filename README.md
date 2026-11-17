@@ -25,7 +25,7 @@ python -m evals.run --model               # all guardrail evals through the loca
 
 | Step or part | Status | Where |
 |---|---|---|
-| Founder brief intake; excluded product types get a stop recommendation | **Working** | `agents/intake.py`, `app.py` |
+| Founder brief intake; physical goods and other excluded product types are rejected immediately, before any research | **Working** | `agents/intake.py`, `app.py` |
 | Web search (self-hosted SearXNG, no key) and page fetch | **Working** | `tools.py`, `searxng/` |
 | Evidence store: a claim is sourced only if its page was fetched and contains the quote, otherwise `ASSUMPTION` | **Working** | `evidence.py` |
 | Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |

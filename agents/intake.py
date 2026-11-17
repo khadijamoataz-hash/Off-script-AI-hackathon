@@ -45,8 +45,13 @@ class FounderBrief(BaseModel):
 
 
 class BriefScreen(BaseModel):
-    excluded_category: ExcludedCategory
+    # Order matters: the model writes its reasoning before it commits to a category.
+    customer_receives: str = Field(
+        default="", max_length=300,
+        description="What the founder's own customer gets from the founder, in a few words.",
+    )
     reason: str = Field(min_length=5, max_length=400)
+    excluded_category: ExcludedCategory
     search_queries: list[str] = Field(default_factory=list, max_length=3)
 
     @property

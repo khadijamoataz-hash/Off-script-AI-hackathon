@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 from agents import AgentResult, run_agent
 from agents.intake import FounderBrief
@@ -36,6 +38,15 @@ class StorePage(BaseModel):
 class LaunchPost(BaseModel):
     channel: Literal["community", "social", "email"]
     text: str = Field(min_length=40, max_length=900)
+
+    @field_validator("text")
+    @classmethod
+    def plain_text_only(cls, text: str) -> str:
+        if re.search(r"#\w", text):
+            raise ValueError("Remove all hashtags from the post.")
+        if re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", text):
+            raise ValueError("Remove all emoji from the post.")
+        return text
 
 
 class LaunchDrafts(BaseModel):

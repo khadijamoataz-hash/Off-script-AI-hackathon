@@ -37,7 +37,7 @@ def test_gate_needs_a_clear_founder_choice(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FOUNDRY_OUTPUTS_DIR", str(tmp_path / "outputs"))
     client = TestClient(app_module.app, follow_redirects=False)
 
-    assert "New founder brief" in client.get("/").text
+    assert "Tell us about your idea" in client.get("/").text
     created = client.post("/projects", data={"idea": "An invoice reminder tool for freelance designers"})
     assert created.status_code == 303
     url = created.headers["location"]
@@ -45,7 +45,7 @@ def test_gate_needs_a_clear_founder_choice(tmp_path: Path, monkeypatch) -> None:
     _wait(pid)
 
     page = client.get(url).text
-    assert "Gate: step 1 of Discover is done" in page and "ASSUMPTION" in page
+    assert "Your decision: the opportunities" in page and "ASSUMPTION" in page
     assert "<script" not in page
 
     # "ok" is not a choice: the founder is asked again and the state does not move.
@@ -65,7 +65,7 @@ def test_gate_needs_a_clear_founder_choice(tmp_path: Path, monkeypatch) -> None:
 
     client.post(f"{url}/decide", data={"reply": "Continue"})
     _wait(pid)
-    assert "Gate: end of Phase 1" in client.get(url).text
+    assert "Your decision: end of Discover" in client.get(url).text
     client.post(f"{url}/decide", data={"choice": "stop"})
     assert orch.get_project(pid).status.value == "stopped"
-    assert "FOUNDER DECISION" not in client.get(url).text and "STOP" in client.get(url).text
+    assert "You stopped this project" in client.get(url).text
