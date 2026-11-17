@@ -2,7 +2,7 @@
 
 This page walks through the run whose files are in `outputs/` and whose log is `decision_log.json`. Every file there was written by the code during that run on 17 November 2026 (times below are UTC, from the log); nothing was edited by hand. Project `PRJ-479A6665`, model `qwen3.5:9b` on a laptop, cost $0.00.
 
-**In one line:** the brief was screened, researched with fetched sources, challenged three times by the critic, given a demand target before the test, and stopped when real demand came in at 0 of 55.
+**In one line:** the brief was screened, researched with fetched sources, challenged three times by the critic, given a demand target before the test, and stopped at the Validate gate. **This run demonstrates how the gate works; it is not a demand experiment.** The landing page was never published and no sign-ups were collected, so the recorded 0 does not show that nobody wants this product (see section 6).
 
 ## 1. Brief and screening (12:37)
 
@@ -15,7 +15,8 @@ File: [`outputs/phase1_step1_opportunities.md`](../outputs/phase1_step1_opportun
 - The researcher sharpened the idea and rated it against two alternatives on the same criteria.
 - Claims are a table: each one is **Sourced** only if the page was fetched in the run and the quote is found in it, otherwise `ASSUMPTION`. Pages that refused automated readers are listed as skipped, not hidden.
 - The critic gave the strongest case, the risks, kill criteria and the cheapest test that could disprove the idea, and recommended **REPEAT** with medium confidence: the problem is real, but there is no evidence anyone would pay.
-- The founder chose repeat at step 1 (12:45), continued (12:50), then chose repeat again at the end of Discover (12:52) and continued once more (12:57). The critic recommended REPEAT in all three research rounds. Each system recommendation is logged with `approved_by: null` and each founder choice with `approved_by: "founder"`.
+- In the final round the researcher scored the sharpened idea **17 of 20** (problem severity 5, reachable market 4, founder fit 3, cheap first test 5), with 7 of 7 claims backed by a fetched source. The critic's view was "unproven", not "weak": it recommended **REPEAT** in all three rounds (confidence low, then medium, then medium), the last time because "we have zero evidence of customer willingness to pay".
+- The founder chose repeat at step 1 (12:45), continued (12:50), then chose repeat again at the end of Discover (12:52) and continued once more (12:57). Each system recommendation is logged with `approved_by: null` and each founder choice with `approved_by: "founder"`.
 
 ## 3. Discover, step 2: interview script (12:57)
 
@@ -39,13 +40,21 @@ Files: [`outputs/phase2_step1_lean_canvas.md`](../outputs/phase2_step1_lean_canv
 - The landing page is rendered by code: it has an empty slot `[Real customer quote - collect after launch]` and a `[YOUR-FORM-URL]` placeholder, and no testimonials, counters, prices or countdowns.
 - The page and an invite post went to the approval queue. The founder approved both on the approval screen. Approval exported the exact text as copy-ready files, each with the content hash and a single-use approval token: [`phase2_step2_approved_deploy_act-0c629491.txt`](../outputs/phase2_step2_approved_deploy_act-0c629491.txt), [`phase2_step2_approved_post_act-2940e2ac.txt`](../outputs/phase2_step2_approved_post_act-2940e2ac.txt). Foundry posted nothing.
 
-## 6. Real results and the STOP recommendation (13:07 to 13:08)
+## 6. Gate mechanics demonstration: recording 0 and the STOP recommendation (13:07 to 13:08)
 
 File: [`outputs/phase2_gate_decision.md`](../outputs/phase2_gate_decision.md)
 
-- The founder recorded the real result: **0** sign-ups, confirming these are real people only. (The results line in that file reads "0 0" because the founder typed 0 in the "of what" field; that field now requires a word.)
-- 0 is below half of 55, so the system recommended **STOP** and stated the numbers. Continue was not available: a project whose evidence gate has failed cannot be advanced.
+**What this section shows, and what it does not.** No demand experiment took place in this run:
+
+- The landing page was **never published**: the approved file still contains the `[YOUR-FORM-URL]` placeholder, so nobody could sign up.
+- The founder recorded **0** sign-ups at 13:07:18, **before** approving the landing page (13:07:42) and the invite post (13:07:53). The 0 therefore describes a test that had not been run, not the result of one.
+- **0 sign-ups here does not establish zero demand.** It does not contradict the Discover research (17 of 20, problem judged real), and it is not evidence that the idea is weak.
+- What the section does demonstrate is the gate mechanism: the target fixed in advance cannot be lowered, only founder-recorded demand counts (fetched sources do not), below half of the target the system recommends STOP and states the numbers, and Continue is not available after a failed gate.
+- A real demand test would publish the approved page with a working form, run for the planned period, and record what real people did. Until then the honest status of this idea is the critic's: **REPEAT, unproven**.
+- Given the recorded 0, which is below half of 55, the system recommended **STOP** and stated the numbers. Continue was not available: a project whose evidence gate has failed cannot be advanced.
 - The founder chose stop. Log: `validate_gate`, outcome `stop`, `approved_by: "founder"`.
+
+The records are kept exactly as the run wrote them, including the results line, which reads "0 0" because the founder typed 0 in the "of what" field (that field now requires a word).
 
 ## 7. Delivery test (MOCKED)
 
