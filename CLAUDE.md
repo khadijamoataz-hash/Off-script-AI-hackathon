@@ -250,8 +250,9 @@ Build order:
 | Part | Status |
 |---|---|
 | Layout in section 8, `decision_log.json` writer, README and ARCHITECTURE headings | Done |
-| Evidence store, hash-chained log, approval tokens, state machine, gates with STOP recommendation | Working |
+| Evidence store with fetched-page quote check, hash-chained log, approval tokens, state machine, gates with STOP recommendation | Working |
+| `docker compose up`: app, Ollama with model pull, SearXNG | Working |
+| Brief intake, Discover (researcher, critic, interview script), step gates in the browser | Working |
+| Launch drafts into the approval queue, approval screen, `delivery.py` (`MOCKED`) | Working, from the Discover option only |
 | Keyword guardrails, tool allowlist | Working, known to miss rewordings |
-| Status page | Working |
-| `docker compose up` with model pull | Written, not yet run end to end |
-| Agents, prompts, approval screen, delivery, demo-run `outputs/` and log | Not built |
+| Validate, Build, Commercial setup, Operate agents; guardrails rebuild; committed demo run | Not built |

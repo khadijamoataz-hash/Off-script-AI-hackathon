@@ -10,7 +10,7 @@ docker compose up
 
 Then open http://localhost:8000.
 
-The first start downloads the open-weight model (`qwen2.5:7b`, about 5 GB) in the background. The page shows "model still downloading" until it is ready. No API key or account is needed.
+The first start downloads the open-weight model (`qwen2.5:7b`, about 5 GB) in the background. The page says the model is not ready until the download finishes. No API key or account is needed. Enter a founder brief on the home page; `/status` shows live checks and what is mocked.
 
 Other commands:
 
@@ -24,30 +24,31 @@ python -m evals.run                       # guardrail evals, pass/fail table
 
 | Step or part | Status | Where |
 |---|---|---|
-| Evidence store (every claim is sourced or labelled `ASSUMPTION`) | **Working** | `evidence.py` |
+| Founder brief intake; excluded product types get a stop recommendation | **Working** | `agents/intake.py`, `app.py` |
+| Web search (self-hosted SearXNG, no key) and page fetch | **Working** | `tools.py`, `searxng/` |
+| Evidence store: a claim is sourced only if its page was fetched and contains the quote, otherwise `ASSUMPTION` | **Working** | `evidence.py` |
+| Phase 1 Discover: sharpened idea, scored alternatives, critic review, Mom Test interview script | **Working** | `agents/researcher.py`, `agents/critic.py`, `workflow.py` |
+| Step gates in the browser: continue, repeat, go back, stop; unclear replies are refused | **Working** | `app.py`, `workflow.py` |
+| Phase 2 Validate: design the business | **STUBBED** | not built |
+| Phase 3 Build: build the product | **STUBBED** | not built |
+| Phase 4 Commercial setup: price and policies | **STUBBED** | not built |
+| Phase 5 Launch: store page and launch post drafts, queued for approval | **Working**, based on the Discover option only while Phases 2 to 4 are stubbed | `agents/launcher.py`, `workflow.py` |
+| Approve or reject the exact text in the browser; approved text is exported as a copy-ready file | **Working** | `app.py`, `approval.py` |
+| Phase 5 Launch: automatic delivery to buyers | **MOCKED** | `delivery.py`: simulated order, no payment |
+| Phase 6 Operate and learn | **STUBBED** | not built |
 | Decision log with hash chain | **Working** | `decision_log.py`, `decision_log.json` |
-| Approval queue: signed, single-use, content-bound approvals | **Working** | `approval.py` |
 | Six-phase state machine and gates, including the STOP recommendation | **Working** | `orchestrator.py`, `gates.py` |
 | Guardrails: keyword rules and tool allowlist | **Working** | `guardrails.py` |
 | Guardrails: model classifier on every output | **STUBBED** | built in `llm.py`, not switched on by default |
 | Local model adapter (Ollama) | **Working** | `llm.py` |
-| Status page | **Working** | `app.py` |
-| Phase 1 Discover: find opportunities | **STUBBED** | `agents/` |
-| Phase 2 Validate: design the business | **STUBBED** | `agents/` |
-| Phase 3 Build: build the product | **STUBBED** | `agents/` |
-| Phase 4 Commercial setup: price and policies | **STUBBED** | `agents/` |
-| Phase 5 Launch: store page and launch posts | **STUBBED** | `agents/` |
-| Phase 5 Launch: automatic delivery to buyers | **STUBBED** (will be **MOCKED**) | not built |
-| Phase 6 Operate and learn | **STUBBED** | `agents/` |
-| Approving actions in the browser | **STUBBED** | not built; approval works through the Python API |
 | Posting to social, email or store sites | **STUBBED** by design | approved text is written to `outputs/` for the founder to post |
 | Payments | None | no payment code exists, not even sandbox |
 
-Known limit: the keyword guardrails miss rewordings and non-English prompts until the model classifier is on by default.
+Known limits: the keyword guardrails miss rewordings and non-English prompts until the model classifier is on by default, and they currently check only items entering the approval queue. Because Phases 2 to 4 are stubbed, the state machine's recorded phase stops at Validate; Launch drafting runs from the approved Discover option.
 
 ## Architecture
 
-A state machine moves a project through six phases: Discover, Validate, Build, Commercial setup, Launch, Operate and learn. Every step ends with a gate: founder approval, an evidence target set in advance, or passing tests. Agents can only propose actions; anything that would be published, sent, spent or signed waits in an approval queue until the founder approves the exact content. Every claim is stored with a fetched source or labelled `ASSUMPTION`, and every agent action is written to a hash-chained `decision_log.json`. Guardrails run in code on every agent output and tool call. Full design: [ARCHITECTURE.md](ARCHITECTURE.md).
+A state machine moves a project through six phases: Discover, Validate, Build, Commercial setup, Launch, Operate and learn. Every step ends with a gate: founder approval, an evidence target set in advance, or passing tests. Agents can only propose actions; anything that would be published, sent, spent or signed waits in an approval queue until the founder approves the exact content. Every claim is stored with a fetched source or labelled `ASSUMPTION`, and every agent action is written to a hash-chained `decision_log.json`. Agent outputs are typed, so content such as testimonials, prices or countdowns has no field to be written into; guardrail rules check every item entering the approval queue. Full design: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Models and free resources
 
@@ -55,6 +56,8 @@ A state machine moves a project through six phases: Discover, Validate, Build, C
 - No paid service, API key or account is required. No paid API is ever called.
 - To use a different open-weight model, set `FOUNDRY_MODEL` (see `.env.example`).
 - If the model is not available, model calls fail with an error. There is no mock fallback outside the tests.
+- Web search uses a SearXNG container started by the same command: no key, no account.
+- Speed: inside Docker on a Mac the model runs on CPU (several minutes per step). To use a host Ollama with GPU access, set `FOUNDRY_OLLAMA_URL=http://host.docker.internal:11434` in `.env`.
 
 ## Cost per run
 

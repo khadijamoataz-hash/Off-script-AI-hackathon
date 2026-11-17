@@ -1,0 +1,747 @@
+"""Step runner for the phases that are built: Phase 1 (Discover) and the Phase 5 (Launch)
+drafting, approval and MOCKED delivery steps.
+
+A step runs its agents, records evidence, writes its output file to `outputs/`, logs every
+action, and then stops at a gate. Nothing moves on until `decide_step` or `decide_phase_gate`
+is called by a founder action in the UI or CLI.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Callable
+
+from agents.critic import CriticOutput, critique
+from agents.launcher import LaunchDrafts, draft_launch, render_store_page
+from agents.intake import EXCLUDED_LABELS, BriefScreen, FounderBrief, screen_brief
+from agents.researcher import (
+    InterviewScript,
+    Opportunity,
+    ResearchOutput,
+    draft_interview_script,
+    research_opportunities,
+)
+from approval import ActionStatus, OutboxError, ProposedAction
+from delivery import MockDeliveryService, run_mock_delivery_test
+from evidence import Claim, ClaimType, FetchedPage
+from guardrails import PolicyViolationError
+from gates import GateOutcome, PhaseName, ProjectStatus
+from llm import LLMAdapter
+from orchestrator import Orchestrator, ProjectRecord
+from tools import SearchResult, ToolError, fetch_url, web_search
+
+MAX_PAGES = 4
+EXCERPT_CHARS = 1400
+STEP_CHOICES = ("continue", "repeat", "go_back", "stop")
+
+SearchFn = Callable[[str], list[SearchResult]]
+FetchFn = Callable[..., FetchedPage]
+
+
+class WorkflowError(RuntimeError):
+    """The requested step or decision is not allowed in the project's current state."""
+
+
+def outputs_dir() -> Path:
+    return Path(os.environ.get("FOUNDRY_OUTPUTS_DIR", "outputs"))
+
+
+def select_excerpt(text: str, keywords: set[str], limit: int = EXCERPT_CHARS) -> str:
+    """Pick the lines of a page that share the most words with the brief, in page order.
+
+    Lines are passed to the model unchanged so that a quote copied from the excerpt can be
+    found again in the stored page text.
+    """
+    lines = [line for line in text.splitlines() if len(line) >= 40]
+    if not lines:
+        return text[:limit]
+    scored = []
+    for index, line in enumerate(lines):
+        words = set(re.findall(r"[a-z]{4,}", line.lower()))
+        scored.append((len(words & keywords), index))
+    chosen: set[int] = set()
+    used = 0
+    for _, index in sorted(scored, key=lambda item: (-item[0], item[1])):
+        line = lines[index][:600]
+        if used + len(line) > limit:
+            continue
+        chosen.add(index)
+        used += len(line)
+    return "\n".join(lines[i][:600] for i in sorted(chosen))
+
+
+def discover_recommendation(critic: CriticOutput, sourced_facts: int) -> tuple[str, str]:
+    """The system's recommendation at the Discover gate: continue, repeat or stop."""
+    if critic.recommendation == "stop":
+        return "stop", f"The critic recommends dropping this idea: {critic.reason}"
+    if sourced_facts == 0:
+        return (
+            "repeat",
+            "No claim is backed by a fetched source; everything is an ASSUMPTION. "
+            "Add source URLs or interview notes and run the step again before going on.",
+        )
+    if critic.recommendation == "go":
+        return "continue", critic.reason
+    if critic.recommendation == "pivot":
+        return "repeat", f"The critic suggests testing a changed version first: {critic.reason}"
+    return "repeat", critic.reason
+
+
+class Workflow:
+    def __init__(
+        self,
+        orchestrator: Orchestrator,
+        adapter: LLMAdapter | None = None,
+        *,
+        out_dir: Path | None = None,
+        search: SearchFn | None = None,
+        fetch: FetchFn | None = None,
+    ) -> None:
+        self.orch = orchestrator
+        self.ledger = orchestrator.evidence_ledger
+        self.log = orchestrator.decision_log
+        self.adapter = adapter or LLMAdapter()
+        self.out_dir = out_dir or outputs_dir()
+        # Approved exports go to the same folder as the other outputs.
+        self.orch.outbox.export_dir = self.out_dir
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.search = search or web_search
+        self.fetch = fetch or fetch_url
+        with self._connect() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS workflow_state "
+                "(project_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)"
+            )
+
+    # ------------------------------------------------------------------ state
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.orch.db_path)
+
+    def get_state(self, project_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT state_json FROM workflow_state WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        return json.loads(row[0]) if row else {}
+
+    def _set_state(self, project_id: str, **changes: Any) -> dict[str, Any]:
+        state = self.get_state(project_id)
+        state.update(changes)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO workflow_state (project_id, state_json) VALUES (?, ?)",
+                (project_id, json.dumps(state)),
+            )
+        return state
+
+    def _add_usage(self, project_id: str, result: Any) -> None:
+        usage = self.get_state(project_id).get("usage", {})
+        usage["model_calls"] = usage.get("model_calls", 0) + result.attempts
+        usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + result.prompt_tokens
+        usage["completion_tokens"] = usage.get("completion_tokens", 0) + result.completion_tokens
+        usage["model"] = result.model
+        self._set_state(project_id, usage=usage)
+
+    def _write(self, name: str, content: str) -> str:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        path = self.out_dir / name
+        path.write_text(content.rstrip() + "\n", encoding="utf-8")
+        return str(path)
+
+    def _brief(self, project: ProjectRecord) -> FounderBrief:
+        return FounderBrief(**project.brief)
+
+    # ------------------------------------------------------------------ intake
+
+    def start_project(self, brief: FounderBrief, *, evidence_target: int = 10) -> ProjectRecord:
+        name = " ".join(brief.idea.split()[:8])
+        project = self.orch.create_project(
+            name=name,
+            idea_summary=brief.idea,
+            target_customer=brief.target_market,
+            validate_evidence_target=evidence_target,
+            brief=brief.model_dump(),
+        )
+        self._set_state(project.id, stage="new", awaiting=None, usage={})
+        return project
+
+    # ------------------------------------------------------------------ step 1
+
+    def run_discover_step1(self, project_id: str) -> dict[str, Any]:
+        """Screen the brief, gather sources, find opportunities, criticise. Ends at a step gate."""
+        project = self.orch._require_project(project_id)
+        if project.status != ProjectStatus.ACTIVE:
+            raise WorkflowError(f"Project is {project.status.value}; no step can run.")
+        brief = self._brief(project)
+        started = time.monotonic()
+        phase = PhaseName.DISCOVER.value
+        self._set_state(project_id, stage="screening the brief", awaiting=None, error=None)
+
+        screen = screen_brief(self.adapter, brief)
+        self._add_usage(project_id, screen)
+        self.log.append(
+            action="screen_brief", agent="intake", actor="agent_proposal", phase=phase,
+            decision=f"Product type: {screen.output.excluded_category}. {screen.output.reason}",
+            outcome="excluded" if screen.output.is_excluded else "allowed",
+            sources=[], model=screen.model, cost=0, project_id=project_id,
+            metadata={"tokens": screen.tokens},
+        )
+        if screen.output.is_excluded:
+            return self._excluded(project, screen.output)
+
+        self._set_state(project_id, stage="searching and reading sources")
+        pages, search_note = self._gather_sources(project_id, brief, screen.output.search_queries)
+        keywords = set(re.findall(r"[a-z]{4,}", f"{brief.idea} {brief.target_market}".lower()))
+        excerpts = [select_excerpt(page.text, keywords) for page in pages]
+
+        self._set_state(project_id, stage="finding opportunities")
+        research = research_opportunities(self.adapter, brief, pages, excerpts)
+        self._add_usage(project_id, research)
+        claims = self._record_claims(project_id, research.output, pages)
+        facts = [c for c in claims if c.claim_type == ClaimType.FACT]
+        self.log.append(
+            action="find_opportunities", agent="researcher", actor="agent_proposal", phase=phase,
+            decision=(
+                f"Sharpened the idea and scored {len(research.output.options())} options; "
+                f"{len(facts)} claims sourced, {len(claims) - len(facts)} labelled ASSUMPTION."
+            ),
+            outcome="proposed", sources=sorted({c.source_url for c in facts if c.source_url}),
+            model=research.model, cost=0, project_id=project_id,
+            evidence_ids=[c.id for c in claims], metadata={"tokens": research.tokens},
+        )
+
+        self._set_state(project_id, stage="critic review")
+        option = self._recommended_option(research.output)
+        critic = critique(self.adapter, brief, option, claims)
+        self._add_usage(project_id, critic)
+        self.log.append(
+            action="critique_idea", agent="critic", actor="agent_proposal", phase=phase,
+            decision=(
+                f"Recommendation: {critic.output.recommendation} "
+                f"(confidence {critic.output.confidence}). {critic.output.reason}"
+            ),
+            outcome=critic.output.recommendation, sources=[], model=critic.model, cost=0,
+            project_id=project_id, metadata={"tokens": critic.tokens},
+        )
+
+        recommendation, reason = discover_recommendation(critic.output, len(facts))
+        path = self._write(
+            "phase1_step1_opportunities.md",
+            render_opportunities(
+                project, research.output, critic.output, claims, search_note,
+                recommendation, reason,
+            ),
+        )
+        self.orch.save_phase_artifact(
+            project_id, PhaseName.DISCOVER,
+            {
+                "research": research.output.model_dump(),
+                "critic": critic.output.model_dump(),
+                "recommended_option": option.model_dump(),
+            },
+            evidence_ids=[c.id for c in claims], agent="researcher", model=research.model,
+        )
+        self.log.append(
+            action="discover_step1_gate", agent="gate", actor="gate_check", phase=phase,
+            decision=f"Step 1 complete. System recommendation: {recommendation}. {reason}",
+            outcome=f"recommend_{recommendation}", sources=[], model=None, cost=0,
+            project_id=project_id, metadata={"sourced_facts": len(facts), "claims": len(claims)},
+        )
+        return self._set_state(
+            project_id, stage="step 1 done", awaiting="step1_gate",
+            recommendation=recommendation, recommendation_reason=reason,
+            files=[path], seconds_step1=round(time.monotonic() - started, 1),
+        )
+
+    def _excluded(self, project: ProjectRecord, screen: BriefScreen) -> dict[str, Any]:
+        label = EXCLUDED_LABELS[screen.excluded_category]
+        reason = (
+            f"This brief describes a product type Foundry does not work on ({label}). "
+            f"{screen.reason}"
+        )
+        self.log.append(
+            action="discover_gate", agent="gate", actor="gate_check",
+            phase=PhaseName.DISCOVER.value,
+            decision=f"Excluded product type. System recommendation: stop. {reason}",
+            outcome="recommend_stop", sources=[], model=None, cost=0, project_id=project.id,
+            metadata={"excluded_category": screen.excluded_category},
+        )
+        path = self._write(
+            "phase1_gate_decision.md",
+            render_gate_decision(project, "stop", reason, founder_decision=None, excluded=True),
+        )
+        return self._set_state(
+            project.id, stage="excluded product type", awaiting="excluded_gate",
+            recommendation="stop", recommendation_reason=reason, files=[path],
+        )
+
+    def _gather_sources(
+        self, project_id: str, brief: FounderBrief, queries: list[str]
+    ) -> tuple[list[FetchedPage], str]:
+        """Search, then fetch founder-supplied URLs first and the top results after."""
+        phase = PhaseName.DISCOVER.value
+        urls: list[str] = list(brief.source_urls)
+        notes: list[str] = []
+        for query in queries[:3]:
+            try:
+                results = self.search(query)
+            except ToolError as exc:
+                notes.append(f"Web search failed for '{query}': {exc}")
+                self.log.append(
+                    action="web_search", agent="researcher", actor="system", phase=phase,
+                    decision=f"Search failed for '{query}': {exc}", outcome="failed",
+                    sources=[], model=None, cost=0, project_id=project_id,
+                )
+                continue
+            self.log.append(
+                action="web_search", agent="researcher", actor="system", phase=phase,
+                decision=f"Searched '{query}': {len(results)} results.", outcome="recorded",
+                sources=[r.url for r in results], model=None, cost=0, project_id=project_id,
+            )
+            for result in results[:2]:
+                if result.url not in urls:
+                    urls.append(result.url)
+
+        def _fetch(url: str) -> FetchedPage | str:
+            try:
+                return self.fetch(url, project_id=project_id, ledger=self.ledger)
+            except ToolError as exc:
+                return f"Skipped a page that could not be read ({exc})."
+
+        pages: list[FetchedPage] = []
+        candidates = urls[: MAX_PAGES + 2]
+        if candidates:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                for outcome in pool.map(_fetch, candidates):
+                    if isinstance(outcome, str):
+                        notes.append(outcome)
+                    elif len(pages) < MAX_PAGES:
+                        pages.append(outcome)
+        self.log.append(
+            action="fetch_sources", agent="researcher", actor="system", phase=phase,
+            decision=f"Fetched {len(pages)} of {len(candidates)} pages.", outcome="recorded",
+            sources=[p.url for p in pages], model=None, cost=0, project_id=project_id,
+            metadata={"failed": len(candidates) - len(pages)},
+        )
+        if not pages:
+            notes.append("No page could be fetched, so no claim in this run can be a FACT.")
+        return pages, " ".join(notes)
+
+    def _record_claims(
+        self, project_id: str, research: ResearchOutput, pages: list[FetchedPage]
+    ) -> list[Claim]:
+        """Store each drafted claim. The ledger checks the quote against the fetched page."""
+        claims: list[Claim] = []
+        for draft in research.claims:
+            url = None
+            if draft.source_number is not None and 1 <= draft.source_number <= len(pages):
+                url = pages[draft.source_number - 1].url
+            claims.append(
+                self.ledger.add_claim(
+                    draft.text, project_id=project_id, linked_phase=PhaseName.DISCOVER.value,
+                    source_url=url, quote=draft.quote,
+                )
+            )
+        return claims
+
+    @staticmethod
+    def _recommended_option(research: ResearchOutput) -> Opportunity:
+        wanted = research.recommended.strip().lower()
+        for option in research.options():
+            if option.title.strip().lower() == wanted:
+                return option
+        return max(research.options(), key=lambda option: option.total)
+
+    # ------------------------------------------------------------------ step 2
+
+    def run_discover_step2(self, project_id: str) -> dict[str, Any]:
+        """Draft the Mom Test interview script, then stop at the phase gate."""
+        project = self.orch._require_project(project_id)
+        artifact = project.phase_artifacts.get(PhaseName.DISCOVER.value)
+        if not artifact:
+            raise WorkflowError("Step 1 has not produced an option yet.")
+        started = time.monotonic()
+        self._set_state(project_id, stage="drafting the interview script", awaiting=None)
+        option = Opportunity(**artifact["recommended_option"])
+        research = ResearchOutput(**artifact["research"])
+        script = draft_interview_script(
+            self.adapter, self._brief(project), option, research.market_definition
+        )
+        self._add_usage(project_id, script)
+        self.log.append(
+            action="draft_interview_script", agent="researcher", actor="agent_proposal",
+            phase=PhaseName.DISCOVER.value,
+            decision=f"Drafted a {len(script.output.questions)}-question Mom Test script.",
+            outcome="proposed", sources=[], model=script.model, cost=0, project_id=project_id,
+            metadata={"tokens": script.tokens},
+        )
+        state = self.get_state(project_id)
+        files = [
+            self._write(
+                "phase1_step2_interview_script.md",
+                render_interview_script(project, option, script.output),
+            ),
+            self._write(
+                "phase1_gate_decision.md",
+                render_gate_decision(
+                    project, state.get("recommendation", "repeat"),
+                    state.get("recommendation_reason", ""), founder_decision=None,
+                    usage=state.get("usage"),
+                ),
+            ),
+        ]
+        return self._set_state(
+            project_id, stage="step 2 done", awaiting="phase_gate",
+            files=state.get("files", []) + files,
+            seconds_step2=round(time.monotonic() - started, 1),
+        )
+
+    # ------------------------------------------------------------------ founder decisions
+
+    def decide_step(self, project_id: str, choice: str, *, note: str = "") -> dict[str, Any]:
+        """Record the founder's choice at a gate. Called only from a founder UI or CLI action."""
+        if choice not in STEP_CHOICES:
+            raise WorkflowError(f"Choice must be one of {STEP_CHOICES}, got {choice!r}.")
+        project = self.orch._require_project(project_id)
+        state = self.get_state(project_id)
+        awaiting = state.get("awaiting")
+        if awaiting not in {"step1_gate", "phase_gate", "excluded_gate"}:
+            raise WorkflowError("No gate is waiting for a decision.")
+        if awaiting == "excluded_gate" and choice != "stop":
+            raise WorkflowError(
+                "Excluded product types cannot continue. Stop this project and submit a new brief."
+            )
+
+        if choice == "stop":
+            self.orch.decide_gate(project_id, GateOutcome.STOP, founder_approved=True, rationale=note)
+            self._write_decision(project, state, "stop")
+            return self._set_state(project_id, stage="stopped by founder", awaiting=None)
+
+        if awaiting == "step1_gate":
+            self.log.append(
+                action="discover_step1_gate", agent="gate", actor="founder_approval",
+                phase=PhaseName.DISCOVER.value,
+                decision=f"Founder chose '{choice}' after step 1. {note}".strip(),
+                outcome=choice, sources=[], model=None, cost=0, project_id=project_id,
+                metadata={"system_recommendation": state.get("recommendation")},
+            )
+            if choice == "continue":
+                return self._set_state(project_id, stage="ready for step 2", awaiting="run_step2")
+            if choice == "repeat":
+                return self._set_state(project_id, stage="ready to repeat step 1", awaiting="run_step1")
+            return self._set_state(project_id, stage="back to the brief", awaiting="revise_brief")
+
+        # Phase gate.
+        if choice == "continue":
+            self.orch.decide_gate(project_id, GateOutcome.ADVANCE, founder_approved=True, rationale=note)
+            self._write_decision(project, state, "continue")
+            return self._set_state(
+                project_id, stage="Discover approved", awaiting=None, discover_approved=True
+            )
+        if choice == "repeat":
+            self.orch.decide_gate(project_id, GateOutcome.REPEAT, founder_approved=True, rationale=note)
+            self._write_decision(project, state, "repeat")
+            return self._set_state(project_id, stage="ready to repeat step 1", awaiting="run_step1")
+        self.log.append(
+            action="discover_gate", agent="gate", actor="founder_approval",
+            phase=PhaseName.DISCOVER.value,
+            decision=f"Founder chose to go back to step 1. {note}".strip(), outcome="go_back",
+            sources=[], model=None, cost=0, project_id=project_id,
+        )
+        return self._set_state(project_id, stage="back to step 1 gate", awaiting="step1_gate")
+
+    def revise_brief(self, project_id: str, brief: FounderBrief) -> dict[str, Any]:
+        state = self.get_state(project_id)
+        if state.get("awaiting") != "revise_brief":
+            raise WorkflowError("The brief can only be revised after choosing 'go back'.")
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET brief_json = ?, idea_summary = ? WHERE id = ?",
+                (json.dumps(brief.model_dump()), brief.idea, project_id),
+            )
+        self.log.append(
+            action="revise_brief", agent="founder", actor="founder_approval",
+            phase=PhaseName.DISCOVER.value, decision="Founder revised the brief.",
+            outcome="recorded", sources=[], model=None, cost=0, project_id=project_id,
+        )
+        return self._set_state(project_id, stage="ready to repeat step 1", awaiting="run_step1")
+
+    # ------------------------------------------------------------------ launch drafts
+
+    def run_launch_drafts(self, project_id: str) -> dict[str, Any]:
+        """Draft the store page and launch posts, queue each for approval, run the MOCKED
+        delivery test. Nothing is published: approved items become copy-ready text files."""
+        project = self.orch._require_project(project_id)
+        artifact = project.phase_artifacts.get(PhaseName.DISCOVER.value)
+        state = self.get_state(project_id)
+        if not artifact or not state.get("discover_approved"):
+            raise WorkflowError("Launch drafts need a Discover option the founder has approved.")
+        phase = PhaseName.LAUNCH.value
+        self._set_state(project_id, launch_stage="drafting")
+        option = Opportunity(**artifact["recommended_option"])
+        drafts = draft_launch(self.adapter, self._brief(project), option)
+        self._add_usage(project_id, drafts)
+        self.log.append(
+            action="draft_launch_assets", agent="launcher", actor="agent_proposal", phase=phase,
+            decision=f"Drafted a store page and {len(drafts.output.posts)} launch posts.",
+            outcome="proposed", sources=[], model=drafts.model, cost=0, project_id=project_id,
+            metadata={"tokens": drafts.tokens},
+        )
+
+        store_text = render_store_page(drafts.output.store_page)
+        proposals = [(1, "listing", "store page", drafts.output.store_page.headline, store_text)]
+        proposals += [
+            (2, "email" if post.channel == "email" else "post", post.channel,
+             f"Launch post ({post.channel})", post.text)
+            for post in drafts.output.posts
+        ]
+        queued: list[str] = []
+        blocked: list[str] = []
+        for step, action_type, target, title, body in proposals:
+            try:
+                action = self.orch.outbox.propose_action(
+                    project_id=project_id, phase=phase, step=step, action_type=action_type,
+                    target=target, title=title, body=body,
+                )
+                queued.append(action.id)
+            except PolicyViolationError as exc:
+                blocked.append(f"{title}: {exc}")
+
+        note = (
+            "Status: **DRAFT, not published.** Each item waits in the approval queue; the founder "
+            "approves or rejects the exact text. Foundry has no posting connector.\n\n"
+            "Phases 2 to 4 are STUBBED in this prototype, so this draft is based on the Discover "
+            "option only. Product details are `ASSUMPTION` until those phases run."
+        )
+        files = [
+            self._write("phase5_step1_store_page.md",
+                        f"# Phase 5, step 1: store page draft\n\n{note}\n\n---\n\n{store_text}"),
+            self._write(
+                "phase5_step2_launch_posts.md",
+                f"# Phase 5, step 2: launch post drafts\n\n{note}\n\n"
+                + "\n\n".join(f"## {post.channel}\n\n{post.text}" for post in drafts.output.posts)
+                + ("\n\n## Blocked by guardrails\n\n" + "\n".join(f"- {b}" for b in blocked) if blocked else ""),
+            ),
+        ]
+        delivery_log = run_mock_delivery_test(
+            MockDeliveryService(self.orch.db_path), project_id=project_id, product_name=option.title
+        )
+        files.append(self._write("payment_test_log.md", delivery_log))
+        self.log.append(
+            action="mock_delivery_test", agent="delivery", actor="system", phase=phase,
+            decision="Ran the MOCKED delivery test (idempotent delivery, refund revokes access). "
+                     "No payment took place.",
+            outcome="recorded", sources=[], model=None, cost=0, project_id=project_id,
+            metadata={"label": "MOCKED"},
+        )
+        return self._set_state(
+            project_id, launch_stage="awaiting approvals", launch_actions=queued,
+            launch_blocked=blocked, files=state.get("files", []) + files,
+        )
+
+    def launch_actions(self, project_id: str) -> list[ProposedAction]:
+        return [
+            a for a in self.orch.outbox.list_actions(project_id=project_id)
+            if a.phase == PhaseName.LAUNCH.value
+        ]
+
+    def approve_and_export(self, action_id: str, *, seen_hash: str) -> str:
+        """Founder approval of the exact content shown. Called only from a founder UI action.
+
+        `seen_hash` is the hash of the text the founder was looking at; if the content changed
+        since, nothing is approved.
+        """
+        action = self.orch.outbox.get_action(action_id)
+        if action is None:
+            raise WorkflowError("Action not found.")
+        if action.content_hash != seen_hash:
+            raise WorkflowError("The content changed after it was shown. Review it again.")
+        token = self.orch.outbox.approve_action(action_id)
+        receipt = self.orch.outbox.execute_action(action_id, token)
+        return receipt.export_path
+
+    def reject(self, action_id: str, reason: str) -> None:
+        self.orch.outbox.reject_action(action_id, reason=reason or "Rejected by founder")
+
+    def decide_launch_gate(self, project_id: str, choice: str) -> dict[str, Any]:
+        """Launch gate: every draft reviewed and at least one approved, plus the founder's choice."""
+        if choice not in STEP_CHOICES:
+            raise WorkflowError(f"Choice must be one of {STEP_CHOICES}.")
+        project = self.orch._require_project(project_id)
+        actions = self.launch_actions(project_id)
+        if not actions:
+            raise WorkflowError("There are no launch drafts yet.")
+        pending = [a for a in actions if a.status == ActionStatus.PENDING]
+        approved = [a for a in actions if a.status in {ActionStatus.APPROVED, ActionStatus.EXECUTED}]
+        rejected = [a for a in actions if a.status == ActionStatus.REJECTED]
+        ready = not pending and bool(approved)
+        if choice == "continue" and not ready:
+            raise WorkflowError(
+                "The Launch gate is not met: every draft must be reviewed and at least one approved."
+            )
+        recommendation = "continue" if ready else "repeat"
+        reason = (
+            f"{len(approved)} approved, {len(rejected)} rejected, {len(pending)} not yet reviewed."
+        )
+        self.log.append(
+            action="launch_gate", agent="gate", actor="founder_approval", phase=PhaseName.LAUNCH.value,
+            decision=f"Founder chose '{choice}' at the Launch gate. {reason}", outcome=choice,
+            sources=[], model=None, cost=0, project_id=project_id,
+            metadata={"system_recommendation": recommendation},
+        )
+        self._write(
+            "phase5_gate_decision.md",
+            "# Phase 5 gate decision: Launch\n\n"
+            f"Project `{project.id}`: {project.idea_summary}\n\n"
+            f"**System recommendation: {recommendation.upper()}.** {reason}\n\n"
+            f"**Founder decision:** {choice.upper()}\n\n"
+            "## What this gate checks\n\n"
+            "No draft is left unreviewed and at least one is approved. Approved drafts were "
+            "exported as copy-ready text for the founder to post; nothing was published by Foundry. "
+            "Delivery is `MOCKED` (see `payment_test_log.md`); no payment took place.\n\n"
+            "Phases 2 to 4 are STUBBED in this prototype, so the project's recorded phase is not "
+            "advanced by this decision.\n\n"
+            "| Draft | Type | Outcome |\n|---|---|---|\n"
+            + "\n".join(f"| {_cell(a.title)} | {a.action_type.value} | {a.status.value} |" for a in actions),
+        )
+        return self._set_state(project_id, launch_stage=f"gate decided: {choice}")
+
+    def _write_decision(self, project: ProjectRecord, state: dict[str, Any], decision: str) -> None:
+        self._write(
+            "phase1_gate_decision.md",
+            render_gate_decision(
+                project, state.get("recommendation", "repeat"),
+                state.get("recommendation_reason", ""), founder_decision=decision,
+                excluded=state.get("awaiting") == "excluded_gate", usage=state.get("usage"),
+            ),
+        )
+
+
+# ---------------------------------------------------------------------- rendering
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def render_claims(claims: list[Claim]) -> str:
+    lines = ["| Claim | Status | Source and supporting quote |", "|---|---|---|"]
+    for claim in claims:
+        if claim.claim_type == ClaimType.FACT:
+            source = f"{claim.source_url} : \"{_cell(claim.quote or '')}\""
+            status = "Sourced"
+        else:
+            source, status = "none", "`ASSUMPTION`"
+        lines.append(f"| {_cell(claim.text)} | {status} | {source} |")
+    return "\n".join(lines)
+
+
+def render_opportunities(
+    project: ProjectRecord, research: ResearchOutput, critic: CriticOutput,
+    claims: list[Claim], search_note: str, recommendation: str, reason: str,
+) -> str:
+    facts = sum(1 for c in claims if c.claim_type == ClaimType.FACT)
+    parts = [
+        "# Phase 1, step 1: opportunities",
+        f"Project `{project.id}`. Generated by the researcher and critic agents.",
+        f"**System recommendation: {recommendation.upper()}.** {reason}",
+        f"Critic: **{critic.recommendation}**, confidence **{critic.confidence}**. "
+        f"Evidence: {facts} sourced claims, {len(claims) - facts} labelled `ASSUMPTION`.",
+        "## Options scored on the same criteria",
+    ]
+    table = [
+        "| Option | Customer | Problem severity | Reachable market | Founder fit | Cheap first test | Total /20 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for index, option in enumerate(research.options()):
+        label = "Sharpened idea" if index == 0 else f"Alternative {index}"
+        table.append(
+            f"| **{label}: {_cell(option.title)}** | {_cell(option.customer)} | "
+            f"{option.problem_severity} | {option.reachable_market} | {option.founder_fit} | "
+            f"{option.cheap_first_test} | {option.total} |"
+        )
+    parts.append("\n".join(table))
+    for index, option in enumerate(research.options()):
+        label = "Sharpened idea" if index == 0 else f"Alternative {index}"
+        parts += [
+            f"### {label}: {option.title}",
+            f"- Problem: {option.problem}\n- Product: {option.product}\n"
+            f"- Why these scores: {option.score_reason}",
+        ]
+    parts += [
+        f"**Researcher would test first:** {research.recommended}. {research.recommended_reason}",
+        "The alternatives are options for the founder. The idea is not changed unless the founder chooses to.",
+        "## Market",
+        research.market_definition,
+        "## Claims and evidence",
+        "A claim is Sourced only if the page was fetched in this run and contains the quote. "
+        "Scores and the market definition above are the agents' judgement, not sourced facts.",
+        render_claims(claims),
+    ]
+    if search_note:
+        parts.append(f"Research notes: {search_note}")
+    parts += [
+        "## Critic review",
+        f"**Strongest case:** {critic.strongest_case}",
+        "**Risks**\n" + "\n".join(f"{i}. {risk}" for i, risk in enumerate(critic.risks, 1)),
+        "**Kill criteria (stop if any is true)**\n" + "\n".join(f"- {k}" for k in critic.kill_criteria),
+        f"**Cheapest test that could disprove the idea:** {critic.cheapest_disproving_test}",
+        "**Changes to consider (options, not applied)**\n"
+        + "\n".join(f"- {t.change} Reason: {t.reason}" for t in critic.tweaks),
+        f"**Critic's reasoning:** {critic.reason}",
+    ]
+    return "\n\n".join(parts)
+
+
+def render_interview_script(
+    project: ProjectRecord, option: Opportunity, script: InterviewScript
+) -> str:
+    parts = [
+        "# Phase 1, step 2: customer interview script (The Mom Test)",
+        f"Project `{project.id}`. Option being tested: **{option.title}**.",
+        "The founder runs these interviews with real people. Foundry does not simulate "
+        "interviewees, and no interview results are recorded until the founder enters them.",
+        f"## Who to interview\n\n{script.who_to_interview}",
+        f"## Opening\n\n{script.opening}",
+        "## Questions (about past behaviour, no pitching)\n\n"
+        + "\n".join(f"{i}. {q}" for i, q in enumerate(script.questions, 1)),
+        "## Signs of a real problem\n\n" + "\n".join(f"- {s}" for s in script.signals_of_real_demand),
+        "## Do not ask\n\n" + "\n".join(f"- {q}" for q in script.do_not_ask),
+    ]
+    return "\n\n".join(parts)
+
+
+def render_gate_decision(
+    project: ProjectRecord, recommendation: str, reason: str, *,
+    founder_decision: str | None, excluded: bool = False, usage: dict[str, Any] | None = None,
+) -> str:
+    parts = [
+        "# Phase 1 gate decision: Discover",
+        f"Project `{project.id}`: {project.idea_summary}",
+        f"**System recommendation: {recommendation.upper()}.** {reason}",
+        "**Founder decision:** "
+        + (founder_decision.upper() if founder_decision else "pending (waiting for the founder)"),
+        "## What this gate checks",
+        "The founder reviews the sharpened idea, the critic's risks and kill criteria, and the "
+        "interview script, then chooses: continue, repeat, go back, or stop. "
+        "The system recommends; only the founder decides.",
+    ]
+    if excluded:
+        parts.append(
+            "Excluded product types (physical goods; financial, investment or crypto products; "
+            "health or legal advice products) cannot continue. The only choice offered is stop."
+        )
+    if usage and usage.get("model_calls"):
+        total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+        parts.append(
+            f"## Cost of this run so far\n\n$0.00 ({usage['model_calls']} calls to local model "
+            f"`{usage.get('model')}`, {total} tokens)."
+        )
+    return "\n\n".join(parts)

@@ -149,12 +149,18 @@ def test_orchestrator_full_six_phase_lifecycle_and_gates(tmp_path: Path) -> None
     with pytest.raises(OrchestratorError, match="at least 1 sourced FACT"):
         orch.decide_gate(proj.id, GateOutcome.ADVANCE, founder_approved=True)
 
+    ledger.record_fetch(
+        project_id=proj.id,
+        url="https://www.notion.so/product/notion-for-education",
+        text="The Plus Plan is free for students and educators with a school email address.",
+    )
     fact = ledger.add_claim(
         "Notion student plans are free with university email addresses.",
         project_id=proj.id,
         linked_phase="validate",
         claim_type=ClaimType.FACT,
         source_url="https://www.notion.so/product/notion-for-education",
+        quote="free for students and educators with a school email address",
     )
     # 1 fact + 0 signals = 1 < 3 -> still blocked
     with pytest.raises(OrchestratorError, match="Evidence target not yet reached"):

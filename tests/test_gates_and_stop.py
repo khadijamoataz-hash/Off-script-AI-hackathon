@@ -29,8 +29,9 @@ def _setup(tmp_path: Path, target: int) -> tuple[Orchestrator, EvidenceLedger, O
 
 def test_gate_recommends_stop_when_evidence_is_weak(tmp_path: Path) -> None:
     orch, ledger, _, log, pid = _setup(tmp_path, target=100)
+    ledger.record_fetch(project_id=pid, url="https://example.org/a", text="A sourced fact, as published.")
     fact = ledger.add_claim("A sourced fact", project_id=pid, linked_phase="validate",
-                            source_url="https://example.org/a")
+                            source_url="https://example.org/a", quote="A sourced fact, as published.")
     orch.record_demand_signals(pid, 11, note="waitlist sign-ups", evidence_ids=[fact.id])
 
     check = orch.check_gate(pid)
@@ -57,8 +58,9 @@ def test_gate_recommends_stop_when_evidence_is_weak(tmp_path: Path) -> None:
 
 def test_gate_recommends_repeat_when_close_and_target_is_fixed(tmp_path: Path) -> None:
     orch, ledger, _, _, pid = _setup(tmp_path, target=10)
+    ledger.record_fetch(project_id=pid, url="https://example.org/a", text="A sourced fact, as published.")
     ledger.add_claim("A sourced fact", project_id=pid, linked_phase="validate",
-                     source_url="https://example.org/a")
+                     source_url="https://example.org/a", quote="A sourced fact, as published.")
     orch.record_demand_signals(pid, 6)
     assert orch.check_gate(pid).recommendation == GateOutcome.REPEAT
     with pytest.raises(OrchestratorError, match="fixed once Validate starts"):

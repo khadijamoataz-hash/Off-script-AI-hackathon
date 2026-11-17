@@ -41,12 +41,18 @@ def test_claim_without_source_is_auto_tagged_assumption(tmp_path: Path) -> None:
 def test_claim_with_valid_url_is_stored_as_fact_and_exported(tmp_path: Path) -> None:
     ledger = EvidenceLedger(tmp_path / "ledger.sqlite3")
 
+    ledger.record_fetch(
+        project_id="proj-1",
+        url="https://www.notion.so/blog/100-million-users",
+        text="Today Notion surpassed 100 million users around the world.",
+    )
     fact = ledger.add_claim(
         "Notion surpassed 100 million users globally.",
         project_id="proj-1",
         linked_phase="validate",
         claim_type=ClaimType.FACT,
         source_url="https://www.notion.so/blog/100-million-users",
+        quote="Notion surpassed 100 million users",
         confidence=ConfidenceLevel.HIGH,
     )
     assumption = ledger.add_claim(
@@ -139,3 +145,62 @@ def test_decision_log_rejects_bad_entries(tmp_path: Path) -> None:
     result = DecisionLog(path).verify()
     assert result.valid is False
     assert any("missing required key" in err for err in result.errors)
+
+
+def test_url_that_was_never_fetched_is_an_assumption(tmp_path: Path) -> None:
+    ledger = EvidenceLedger(tmp_path / "ledger.sqlite3")
+    claim = ledger.add_claim(
+        "The market is worth 4 billion dollars.",
+        project_id="proj-1",
+        source_url="https://example.org/made-up-report",
+        quote="The market is worth 4 billion dollars.",
+    )
+    assert claim.claim_type == ClaimType.ASSUMPTION
+    assert claim.source_url is None
+
+
+def test_quote_missing_from_fetched_page_is_an_assumption(tmp_path: Path) -> None:
+    ledger = EvidenceLedger(tmp_path / "ledger.sqlite3")
+    url = "https://example.org/report"
+    ledger.record_fetch(project_id="proj-1", url=url, text="Freelancers spend hours on invoices.")
+    invented = ledger.add_claim(
+        "Most freelancers want this.", project_id="proj-1", source_url=url,
+        quote="90 percent of freelancers would pay for this tool",
+    )
+    other_project = ledger.add_claim(
+        "Freelancers spend hours on invoices.", project_id="proj-2", source_url=url,
+        quote="Freelancers spend hours on invoices.",
+    )
+    real = ledger.add_claim(
+        "Invoicing takes freelancers hours.", project_id="proj-1", source_url=url,
+        quote="freelancers spend   hours on invoices",
+    )
+    assert invented.claim_type == ClaimType.ASSUMPTION
+    assert other_project.claim_type == ClaimType.ASSUMPTION
+    assert real.claim_type == ClaimType.FACT
+    assert ledger.get_claim(real.id).quote == "freelancers spend   hours on invoices"
+
+
+def test_quote_matching_ignores_footnotes_and_keeps_only_the_supported_sentence(tmp_path: Path) -> None:
+    ledger = EvidenceLedger(tmp_path / "ledger.sqlite3")
+    url = "https://example.org/report"
+    ledger.record_fetch(
+        project_id="p", url=url,
+        text="Nearly half of freelancers do writing work,[14] with 18% listing it as a primary skill.",
+    )
+    clean = ledger.add_claim(
+        "Writing is common among freelancers.", project_id="p", source_url=url,
+        quote="Nearly half of freelancers do writing work, with 18% listing it as a primary skill.",
+    )
+    assert clean.claim_type == ClaimType.FACT
+
+    mixed = ledger.add_claim(
+        "Writing is common.", project_id="p", source_url=url,
+        quote="Nearly half of freelancers do writing work, with 18% listing it as a primary skill. "
+              "They all earn six figures within a year of starting.",
+    )
+    assert mixed.claim_type == ClaimType.FACT
+    assert "six figures" not in mixed.quote
+
+    short = ledger.add_claim("Writing.", project_id="p", source_url=url, quote="freelancers do writing")
+    assert short.claim_type == ClaimType.ASSUMPTION

@@ -53,7 +53,9 @@ class LLMConfig:
     openai_api_key: str = field(
         default_factory=lambda: os.environ.get("FOUNDRY_OPENAI_API_KEY", "")
     )
-    timeout_seconds: float = 45.0
+    timeout_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("FOUNDRY_LLM_TIMEOUT", "240"))
+    )
     max_repair_retries: int = 2
     temperature: float = 0.2
 
@@ -168,7 +170,10 @@ class OllamaProvider(LLMProvider):
         payload: dict[str, Any] = {
             "model": self.model,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": {
+                "temperature": temperature,
+                "num_ctx": int(os.environ.get("FOUNDRY_NUM_CTX", "8192")),
+            },
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

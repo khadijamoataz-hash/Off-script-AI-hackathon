@@ -57,6 +57,7 @@ class ProjectRecord(BaseModel):
     name: str
     idea_summary: str
     target_customer: str = ""
+    brief: dict[str, Any] = Field(default_factory=dict)
     current_phase: PhaseName = PhaseName.DISCOVER
     status: ProjectStatus = ProjectStatus.ACTIVE
     phase_iterations: dict[str, int] = Field(
@@ -126,6 +127,9 @@ class Orchestrator:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+            if "brief_json" not in columns:
+                conn.execute("ALTER TABLE projects ADD COLUMN brief_json TEXT NOT NULL DEFAULT '{}'")
 
     def create_project(
         self,
@@ -135,6 +139,7 @@ class Orchestrator:
         target_customer: str = "First-time founders / students",
         validate_evidence_target: int = 3,
         project_id: str | None = None,
+        brief: dict[str, Any] | None = None,
     ) -> ProjectRecord:
         if validate_evidence_target < 1:
             raise OrchestratorError("validate_evidence_target must be >= 1.")
@@ -149,8 +154,8 @@ class Orchestrator:
                 INSERT INTO projects (
                     id, name, idea_summary, target_customer, current_phase, status,
                     phase_iterations_json, validate_evidence_target, recorded_demand_signals,
-                    build_tests_passed, phase_artifacts_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '{}', ?, ?)
+                    build_tests_passed, phase_artifacts_json, created_at, updated_at, brief_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '{}', ?, ?, ?)
                 """,
                 (
                     pid,
@@ -163,6 +168,7 @@ class Orchestrator:
                     validate_evidence_target,
                     now,
                     now,
+                    json.dumps(brief or {}),
                 ),
             )
 
@@ -535,6 +541,7 @@ class Orchestrator:
             name=row["name"],
             idea_summary=row["idea_summary"],
             target_customer=row["target_customer"],
+            brief=json.loads(row["brief_json"] or "{}"),
             current_phase=PhaseName(row["current_phase"]),
             status=ProjectStatus(row["status"]),
             phase_iterations=json.loads(row["phase_iterations_json"]),

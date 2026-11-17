@@ -22,13 +22,26 @@ services:
     entrypoint: ["ollama", "pull", "${FOUNDRY_MODEL:-qwen2.5:7b}"]
     restart: "no"
 
+  # Self-hosted metasearch: gives the agents web search with no API key and no account.
+  # Not published to the host.
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      # Session-signing key for a container that is only reachable inside this compose network.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-foundry-local-search-container}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+
   foundry:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - FOUNDRY_OLLAMA_URL=http://ollama:11434
+      # Default: the Ollama container. Set FOUNDRY_OLLAMA_URL in .env to use another Ollama,
+      # for example one running on the host with GPU access.
+      - FOUNDRY_OLLAMA_URL=${FOUNDRY_OLLAMA_URL:-http://ollama:11434}
       - FOUNDRY_MODEL=${FOUNDRY_MODEL:-qwen2.5:7b}
+      - FOUNDRY_SEARXNG_URL=http://searxng:8080
       - FOUNDRY_DB_PATH=/app/data/foundry.sqlite3
       - FOUNDRY_DECISION_LOG=/app/decision_log.json
     volumes:
@@ -38,6 +51,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      searxng:
+        condition: service_started
 
 volumes:
   ollama_data:

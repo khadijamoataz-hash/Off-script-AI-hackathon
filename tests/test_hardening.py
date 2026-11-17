@@ -86,7 +86,7 @@ def test_status_page_renders_and_is_honest() -> None:
 
     client = TestClient(app)
     assert client.get("/healthz").json() == {"status": "ok"}
-    page = client.get("/")
+    page = client.get("/status")
     assert page.status_code == 200
     assert "STUBBED" in page.text
     data = client.get("/api/status").json()

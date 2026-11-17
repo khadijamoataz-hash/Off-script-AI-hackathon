@@ -26,7 +26,7 @@ flowchart TD
 
 ## Phases
 
-Each phase lists its agents, tools, method and output. Output files go to `outputs/` as `phase<N>_step<M>_<name>` and `phase<N>_gate_<name>`. All phase agents are **STUBBED** today; the state machine, gates, evidence store, approval queue and log they run on are **Working**.
+Each phase lists its agents, tools, method and output. Output files go to `outputs/` as `phase<N>_step<M>_<name>` and `phase<N>_gate_<name>`. Phase 1 (Discover) and the Phase 5 drafting, approval and mocked delivery steps are **Working**; the agents for Phases 2, 3, 4 and 6 are **STUBBED**. See Built vs. stubbed.
 
 ### Phase 1: Discover
 
@@ -114,7 +114,7 @@ reconciliation: orders == payments - fees == payouts, mismatches listed for the 
 - **Refund revokes access.** A refund event for an order id revokes that order's access.
 - **Idempotency prevents double delivery.** Delivery is keyed by order id; a repeated event for the same order does nothing.
 - **Reconciliation.** A periodic job matches orders, payments, fees and payouts and lists mismatches for the founder. Foundry reads these records; it never holds, moves or refunds money.
-- **Prototype:** `delivery.py` will accept a simulated order, write a `MOCKED` delivery record, and prove the idempotency and revoke rules in tests. The run log goes to `outputs/payment_test_log.md` and states that no payment took place.
+- **Prototype:** `delivery.py` accepts a simulated order, writes a `MOCKED` delivery record, and proves the idempotency and revoke rules in tests. The run log goes to `outputs/payment_test_log.md` and states that no payment took place.
 
 ## Data flow
 
@@ -133,17 +133,20 @@ Storage: SQLite (`data/`) for projects, evidence and the approval queue; `decisi
 | Part | Status |
 |---|---|
 | State machine, gates, STOP recommendation (`orchestrator.py`, `gates.py`) | Working |
-| Evidence store (`evidence.py`) | Working; does not yet verify that a URL was fetched |
+| Founder brief intake and excluded-product screening (`agents/intake.py`) | Working |
+| Web search through SearXNG and page fetch (`tools.py`) | Working |
+| Evidence store (`evidence.py`) | Working; a FACT needs a page fetched in the run that contains the quote |
+| Phase 1 Discover agents and step runner (`agents/researcher.py`, `agents/critic.py`, `workflow.py`) | Working |
+| Step gates and approval screen in the browser (`app.py`) | Working |
+| Phase 5 Launch drafts into the approval queue (`agents/launcher.py`) | Working, from the Discover option only |
+| Delivery (`delivery.py`) | MOCKED |
 | Decision log (`decision_log.py`) | Working |
-| Approval queue and tokens (`approval.py`) | Working through the Python API |
-| Guardrails: keyword rules, tool allowlist (`guardrails.py`) | Working; misses rewordings and non-English prompts |
+| Approval queue and tokens (`approval.py`) | Working |
+| Guardrails: keyword rules, tool allowlist (`guardrails.py`) | Working; misses rewordings and non-English prompts; checks approval-queue items only |
 | Guardrails: model classifier | STUBBED (built, not on by default) |
 | Model adapter (`llm.py`) | Working |
-| Status page (`app.py`) | Working |
-| Phase agents, prompts (`agents/`, `prompts/`) | STUBBED |
-| Web search and fetch tools, sandboxed test runner | STUBBED |
-| Approval screen in the browser, CLI | STUBBED |
-| Delivery (`delivery.py`) | STUBBED; will be MOCKED |
+| Phase 2 Validate, Phase 3 Build, Phase 4 Commercial setup, Phase 6 Operate agents | STUBBED |
+| Sandboxed test runner, CLI | STUBBED |
 | Posting connectors | STUBBED by design (copy-ready text only) |
 | Payments, sale to cash | Not built; no payment code |
 
